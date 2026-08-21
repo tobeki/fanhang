@@ -1,0 +1,145 @@
+<launch>
+    <arg name="use_gpu_" value="false"/>
+    <arg name="drone_num" value="1"/>
+    <arg name="frame_id" value="world"/>
+    <arg name="global_cloud_topic" value="/map_generator/global_cloud"/>
+    <arg name="odom_topic" value="/lidar_slam/odom"/>
+
+    <!-- <arg name="map_name" value="$(find map_generator)/resource/small_forest01cutoff.pcd"/> -->
+    <arg name="map_name" value="$(find map_generator)/resource/LibraryLG_01cutoff_sor.pcd"/>
+    <arg name="downsample_resolution" value="0.1"/>
+    <arg name="use_uav_extra_model" value="1"/>
+
+    <!-- Manual Return V1.0.1 control-switch options -->
+    <arg name="enable_return_command_output" default="true"/>
+    <arg name="require_control_takeover" default="false"/>
+    <arg name="trajectory_csv" default=""/>
+    <arg name="output_dir" default="$(env HOME)/fanhang/logs/manual_return_output"/>
+    <arg name="pcd_path" default=""/>
+    <arg name="scenario" default="unknown"/>
+
+    <!-- Preset-waypoint options (flight_type=2).  Used for scenarios that need
+         height changes: MANUAL_TARGET hard-codes z=1 in the legacy planner, so
+         preset waypoints with varying z are the clean way to fly a 3D profile
+         without touching the old planner source. -->
+    <arg name="flight_type" default="1"/>
+    <arg name="point_num" default="1"/>
+    <arg name="point0_x" default="0.0"/>
+    <arg name="point0_y" default="0.0"/>
+    <arg name="point0_z" default="1.0"/>
+    <arg name="point1_x" default="0.0"/>
+    <arg name="point1_y" default="0.0"/>
+    <arg name="point1_z" default="1.0"/>
+    <arg name="point2_x" default="0.0"/>
+    <arg name="point2_y" default="0.0"/>
+    <arg name="point2_z" default="1.0"/>
+    <arg name="point3_x" default="0.0"/>
+    <arg name="point3_y" default="0.0"/>
+    <arg name="point3_z" default="1.0"/>
+    <arg name="point4_x" default="0.0"/>
+    <arg name="point4_y" default="0.0"/>
+    <arg name="point4_z" default="1.0"/>
+
+    <node pkg="map_generator" name="map_pub" type="map_pub" output="screen"
+          args="$(arg map_name)">
+        <param name="add_boundary" value="0"/>
+        <param name="is_bridge" value="0"/>
+        <param name="downsample_res" value="0.1"/>
+        <param name="map_offset_x" value="0.0"/>
+        <param name="map_offset_y" value="0.0"/>
+        <param name="map_offset_z" value="0.0"/>
+    </node>
+
+    <group if="$(arg use_gpu_)">
+        <node pkg="map_generator" name="map_pub1" type="map_pub" output="screen"
+              args="$(arg map_name)">
+            <param name="downsample_res" value="0.1"/>
+            <param name="map_offset_x" value="0.0"/>
+            <param name="map_offset_y" value="0.0"/>
+            <param name="map_offset_z" value="0.0"/>
+        </node>
+    </group>
+    <group unless="$(arg use_gpu_)">
+        <node pkg="map_generator" name="map_pub2" type="map_pub" output="screen"
+              args="$(arg map_name)">
+            <param name="downsample_res" value="$(arg downsample_resolution)"/>
+            <param name="map_offset_x" value="0.0"/>
+            <param name="map_offset_y" value="0.0"/>
+            <param name="map_offset_z" value="0.0"/>
+        </node>
+    </group>
+
+    <!-- Gated drone stack: identical to the existing single_drone.xml except
+         traj_server's position command is remapped to
+         /manual_return/normal_pos_cmd (CommandGate input) instead of the
+         controller topic.  cascadePID still subscribes to
+         /quad_0/planning/pos_cmd, which is now published only by CommandGate.
+    -->
+    <include file="$(find manual_return_planner)/launch/single_drone_gated.xml">
+        <arg name="drone_id" value="0"/>
+        <arg name="uav_num_" value="$(arg drone_num)"/>
+        <arg name="lidar_type" value="mid360"/>
+        <arg name="init_x_" value="0.0"/>
+        <arg name="init_y_" value="0.0"/>
+        <arg name="init_z_" value="1.0"/>
+        <arg name="init_yaw" value="0.0"/>
+        <arg name="map_name_" value="$(arg map_name)"/>
+        <arg name="downsample_resolution_" value="$(arg downsample_resolution)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="use_gpu" value="$(arg use_gpu_)"/>
+        <arg name="use_uav_extra_model_" value="$(arg use_uav_extra_model)"/>
+        <arg name="flight_type" value="$(arg flight_type)"/>
+        <arg name="point_num" value="$(arg point_num)"/>
+        <arg name="point0_x" value="$(arg point0_x)"/>
+        <arg name="point0_y" value="$(arg point0_y)"/>
+        <arg name="point0_z" value="$(arg point0_z)"/>
+        <arg name="point1_x" value="$(arg point1_x)"/>
+        <arg name="point1_y" value="$(arg point1_y)"/>
+        <arg name="point1_z" value="$(arg point1_z)"/>
+        <arg name="point2_x" value="$(arg point2_x)"/>
+        <arg name="point2_y" value="$(arg point2_y)"/>
+        <arg name="point2_z" value="$(arg point2_z)"/>
+        <arg name="point3_x" value="$(arg point3_x)"/>
+        <arg name="point3_y" value="$(arg point3_y)"/>
+        <arg name="point3_z" value="$(arg point3_z)"/>
+        <arg name="point4_x" value="$(arg point4_x)"/>
+        <arg name="point4_y" value="$(arg point4_y)"/>
+        <arg name="point4_z" value="$(arg point4_z)"/>
+    </include>
+
+    <!-- RTL Planner (breadcrumb return, kept for reference only) -->
+    <include file="$(find rtlplanner)/launch/rtl.launch">
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="drone_id" value="0"/>
+    </include>
+
+    <!-- Record the drone position to CSV at 10 Hz -->
+    <node name="drone_position_logger" pkg="test_interface" type="record_drone_position.py"
+          output="screen">
+        <param name="odom_topic"   value="/quad_0/$(arg odom_topic)"/>
+        <param name="output_dir"   value="$(find test_interface)/scripts/logs"/>
+        <param name="log_rate"     value="10.0"/>
+    </node>
+
+    <!-- CommandGate: the SOLE publisher of /quad_0/planning/pos_cmd -->
+    <node pkg="manual_return_planner" type="command_gate_node"
+          name="manual_return_command_gate" output="screen"/>
+
+    <!-- Scenario label for the unified benchmark metrics. -->
+    <param name="/manual_return/scenario" value="$(arg scenario)"/>
+
+    <!-- Manual Return node (recorder + planner + executor) -->
+    <node pkg="manual_return_planner" type="manual_return_node"
+          name="manual_return_planner" output="screen">
+        <rosparam command="load" file="$(find manual_return_planner)/config/manual_return.yaml"/>
+        <param name="enable_return_command_output" value="$(arg enable_return_command_output)"/>
+        <param name="require_control_takeover" value="$(arg require_control_takeover)"/>
+        <param name="trajectory_csv" value="$(arg trajectory_csv)"/>
+        <param name="output_dir" value="$(arg output_dir)"/>
+        <param name="pcd_path" value="$(arg pcd_path)"/>
+    </node>
+
+    <node name="rvizvisualisation" pkg="rviz" type="rviz" output="screen"
+          args="-d $(find manual_return_planner)/config/manual_return_benchmark.rviz"/>
+
+</launch>

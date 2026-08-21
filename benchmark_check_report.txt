@@ -1,0 +1,11 @@
+Benchmark check report
+base: /home/tobeki/fanhang/logs/manual_return_output
+runs: 5
+============================================================
+[OK] 20260821_114521 scenario=straight_long original=292 simplified=6 max_dev=0.00643969403825 cross_track_p95=0.00792444749401
+[OK] 20260821_114655 scenario=straight_short original=201 simplified=2 max_dev=0.0169278146606 cross_track_p95=0.103695581159
+[OK] 20260821_114853 scenario=turn90 original=385 simplified=7 max_dev=0.0187004550569 cross_track_p95=0.0235267216414
+[OK] 20260821_115103 scenario=s_curve original=506 simplified=13 max_dev=0.0483711838719 cross_track_p95=0.101555888509
+[OK] 20260821_115909 scenario=height_change original=159 simplified=6 max_dev=0.0404552878927 cross_track_p95=0.0649209521779
+============================================================
+total runs: 5, ok: 5, fail: 0

@@ -1,0 +1,83 @@
+<launch>
+    <arg name="odom_topic" default="/vins/imu_propagate"/>
+    <arg name="drone_id"  default="0"/>
+    <arg name="max_vel" default="0.5" />
+    <arg name="max_acc" default="3.0" />
+    <arg name="max_jer" default="20.0"/>
+    <arg name="planning_horizon" default="7.5" />
+    <arg name="local_map_size_x" default="5.5"/>
+    <arg name="local_map_size_y" default="5.5"/>
+    <arg name="local_map_size_z" default="2.0"/>
+    <arg name="enable_virtual_wall" default="true"/>
+    <arg name="virtual_ceil" default="2.0"/>
+    <arg name="virtual_ground" default="0.1"/>
+    <arg name="map_resolution" default="0.2"/>
+    <arg name="inflation_size" default="0.4"/>
+    <arg name="init_x" default="0.0"/>
+    <arg name="init_y" default="0.0"/>
+    <arg name="init_z" default="0.0"/>
+    <arg name="cx" default="322.0597839355469"/>
+    <arg name="cy" default="235.91989135742188"/>
+    <arg name="fx" default="390.4934997558594"/>
+    <arg name="fy" default="390.4934997558594"/>
+    <arg name="yaw_mode" default="0"/>
+    <arg name="yaw_dot_max" default="3.14"/>
+    <arg name="yaw_dot_dot_max" default="15.71"/>
+
+    <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="drone_id" value="$(arg drone_id)"/>
+        <arg name="camera_pose_topic" value="no_use0"/>
+        <arg name="depth_topic" value="/camera/depth/image_rect_raw"/>
+        <arg name="cloud_topic" value="no_use2"/>
+        <arg name="cx" value="$(arg cx)"/>
+        <arg name="cy" value="$(arg cy)"/>
+        <arg name="fx" value="$(arg fx)"/>
+        <arg name="fy" value="$(arg fy)"/>
+        <arg name="max_vel" value="$(arg max_vel)" />
+        <arg name="max_acc" value="$(arg max_acc)" />
+        <arg name="max_jer" value="$(arg max_jer)"/>
+        <arg name="planning_horizon" value="$(arg planning_horizon)" />
+        <arg name="local_map_size_x" value="$(arg local_map_size_x)"/>
+        <arg name="local_map_size_y" value="$(arg local_map_size_y)"/>
+        <arg name="local_map_size_z" value="$(arg local_map_size_z)"/>
+        <arg name="enable_virtual_wall" value="$(arg enable_virtual_wall)"/>
+        <arg name="virtual_ceil" value="$(arg virtual_ceil)"/>
+        <arg name="virtual_ground" value="$(arg virtual_ground)"/>
+        <arg name="map_resolution" value="$(arg map_resolution)"/>
+        <arg name="inflation_size" value="$(arg inflation_size)"/>
+        <arg name="init_x" value="$(arg init_x)"/>
+        <arg name="init_y" value="$(arg init_y)"/>
+        <arg name="init_z" value="$(arg init_z)"/>
+        <arg name="flight_type" value="1" />
+        <arg name="point_num" value="1" />
+        <arg name="point0_x" value="3.0" />
+        <arg name="point0_y" value="0.0" />
+        <arg name="point0_z" value="1.0" />
+        <arg name="point1_x" value="0.0" />
+        <arg name="point1_y" value="0.0" />
+        <arg name="point1_z" value="1.0" />
+        <arg name="point2_x" value="0.0" />
+        <arg name="point2_y" value="0.0" />
+        <arg name="point2_z" value="1.0" />
+        <arg name="point3_x" value="0.0" />
+        <arg name="point3_y" value="0.0" />
+        <arg name="point3_z" value="1.0" />
+        <arg name="point4_x" value="0.0" />
+        <arg name="point4_y" value="0.0" />
+        <arg name="point4_z" value="1.0" />
+    </include>
+
+    <node pkg="diff_planner" name="drone_$(arg drone_id)_traj_server" type="traj_server" output="screen">
+        <remap from="position_cmd" to="/setpoints_cmd"/>
+        <remap from="~planning/trajectory" to="/drone_$(arg drone_id)_planning/trajectory"/>
+        <remap from="~planning/yaw" to="/drone_$(arg drone_id)_planning/yaw"/>
+        <remap from="~heartbeat" to="/drone_$(arg drone_id)_traj_server/heartbeat"/>
+        <param name="traj_server/time_forward" value="1.0" type="double"/>
+        <param name="traj_server/yaw_mode" value="$(arg yaw_mode)" type="int"/>
+        <param name="traj_server/yaw_dot_max" value="$(arg yaw_dot_max)" type="double"/>
+        <param name="traj_server/yaw_dot_dot_max" value="$(arg yaw_dot_dot_max)" type="double"/>
+    </node>
+
+</launch>
+

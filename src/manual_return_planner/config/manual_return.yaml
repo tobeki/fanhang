@@ -1,0 +1,42 @@
+world_frame: world
+odom_topic: /quad_0/lidar_slam/odom
+map_topic: /map_generator/global_cloud
+record_frequency: 10.0
+min_point_spacing: 0.03
+rdp_epsilon: 0.05
+max_segment_length: 5.0
+max_reasonable_speed: 2.25
+max_return_acceleration: 1.5
+return_cruise_speed: 0.5
+home_position_tolerance: 0.30
+takeoff_xy_tolerance: 0.5
+takeoff_min_rise: 0.2
+return_finish_speed_threshold: 0.15
+control_takeover_delay: 1.5
+command_frequency: 100.0
+turn_angle_threshold_deg: 20.0
+turn_analysis_distance: 0.5
+enable_return_command_output: false
+require_control_takeover: false
+
+# Manual Return Executor output.  This is consumed by CommandGate, NOT by the
+# controller.  CommandGate is the sole publisher of /quad_0/planning/pos_cmd.
+return_command_topic: /manual_return/return_pos_cmd
+gate_set_manual_return_service: /manual_return/gate/set_manual_return
+gate_set_normal_service: /manual_return/gate/set_normal
+
+pcd_path: ""
+offline_csv_test: false
+output_dir: /home/tobeki/fanhang/logs/manual_return_output
+
+# Safe-RDP V1.1 reservation only; V1.0.1 does not use these values for shortcut
+# generation or collision decisions.
+corridor_radius: 0.5
+corridor_check_step: 0.2
+min_length_ratio: 0.85
+vehicle_body_radius: 0.39
+localization_margin: 0.05
+tracking_margin: 0.05
+map_margin: 0.05
+extra_safety_margin: 0.05
+collision_check_step: 0.1

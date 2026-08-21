@@ -1,0 +1,23 @@
+<launch>
+    <arg name="odom_topic" value="/vins/imu_propagate" />
+    <arg name="yaml_path" default="$(find multipoint)/config/points.yaml" />
+    <arg name="next_distance" default="0.1" />
+    <arg name="start_plan" default="1" />
+    <arg name="back_plan" default="1" />
+    <arg name="auto_planning" default="0" />
+    <arg name="auto_landing" default="0" />
+    <arg name="enable_yaw_align" default="true" />
+    <arg name="yaw_align_thresh" default="1.57" />
+
+    <node pkg="multipoint" name="multipointplan" type="multipointplan" output="screen">
+        <remap from="odom_topic" to="$(arg odom_topic)"/>
+        <param name="yaml_path" value="$(arg yaml_path)" />
+        <param name="next_distance" value="$(arg next_distance)"/>
+        <param name="start_plan" value="$(arg start_plan)"/>
+        <param name="back_plan" value="$(arg back_plan)"/>
+        <param name="auto_planning" value="$(arg auto_planning)"/>
+        <param name="auto_landing" value="$(arg auto_landing)"/>
+        <param name="enable_yaw_align" value="$(arg enable_yaw_align)" type="bool"/>
+        <param name="yaw_align_thresh" value="$(arg yaw_align_thresh)" type="double"/>
+    </node>
+</launch>

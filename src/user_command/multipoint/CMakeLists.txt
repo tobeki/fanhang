@@ -1,0 +1,30 @@
+cmake_minimum_required(VERSION 3.0.2)
+project(multipoint)
+
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  rospy
+  std_msgs
+  mars_quadrotor_msgs
+)
+
+find_package(Eigen3 REQUIRED)
+
+catkin_package(
+  CATKIN_DEPENDS roscpp message_runtime
+  DEPENDS Eigen3
+  INCLUDE_DIRS
+)
+
+include_directories(
+  ${catkin_INCLUDE_DIRS}
+)
+
+add_executable(multipointplan 
+  src/multipointplan.cpp)
+
+target_link_libraries(multipointplan
+  ${catkin_LIBRARIES}
+  Eigen3::Eigen
+)
+

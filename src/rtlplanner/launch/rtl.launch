@@ -1,0 +1,32 @@
+<launch>
+    <!-- ========== RTL Planner ========== -->
+    <!-- 面包屑返航节点 -->
+    <!-- 触发方式: rostopic pub /rtl_trigger std_msgs/Empty -->
+    
+    <arg name="odom_topic" default="/visual_slam/odom" />
+    <arg name="drone_id" default="0" />
+
+    <node pkg="rtlplanner" name="rtl_planner" type="rtl_planner" output="screen">
+        <!-- 订阅里程计 -->
+        <remap from="~odom" to="/quad_$(arg drone_id)/$(arg odom_topic)"/>
+
+        <!-- 发布目标点给 diff_planner -->
+        <remap from="~goal" to="/goal"/>
+
+        <!-- 发送 mandatory_stop 让 diff_planner 停止当前轨迹 -->
+        <remap from="~mandatory_stop" to="/mandatory_stop_to_planner"/>
+
+        <!-- 发送降落指令（仿真环境无 px4ctrl，保留接口不影响运行） -->
+        <remap from="~takeoff_land" to="/px4ctrl/takeoff_land"/>
+
+        <!-- RTL 触发 topic -->
+        <remap from="~rtl_trigger" to="/rtl_trigger"/>
+
+        <!-- 参数 -->
+        <param name="rtl/breadcrumb_dist" value="6.0" type="double"/>       <!-- 直道面包屑间距 -->
+        <param name="rtl/heading_thresh" value="0.5" type="double"/>        <!-- 拐弯航向阈值(rad) ~30度 -->
+        <param name="rtl/arrival_threshold" value="0.5" type="double"/>     <!-- 到达判定阈值 -->
+        <param name="rtl/safe_hover_time" value="1.0" type="double"/>       <!-- 触发后悬停等待时间 -->
+        <param name="rtl/auto_land" value="true" type="bool"/>              <!-- 到达Home后自动降落 -->
+    </node>
+</launch>

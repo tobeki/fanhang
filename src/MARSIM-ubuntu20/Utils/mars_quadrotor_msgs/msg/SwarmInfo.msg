@@ -1,0 +1,2 @@
+mars_quadrotor_msgs/TrajectoryMatrix path
+time start
