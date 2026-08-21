@@ -26,7 +26,7 @@ catkin_package(
 
 include_directories(include ${catkin_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIRS})
 
-add_library(manual_return_core src/manual_return_planner.cpp)
+add_library(manual_return_core src/manual_return_planner.cpp src/safe_rdp.cpp)
 target_link_libraries(manual_return_core ${catkin_LIBRARIES})
 
 add_executable(manual_return_node src/manual_return_node.cpp)
@@ -34,6 +34,9 @@ target_link_libraries(manual_return_node manual_return_core ${catkin_LIBRARIES})
 
 add_executable(command_gate_node src/command_gate_node.cpp)
 target_link_libraries(command_gate_node ${catkin_LIBRARIES})
+
+add_executable(safe_rdp_benchmark src/safe_rdp_benchmark.cpp)
+target_link_libraries(safe_rdp_benchmark manual_return_core ${catkin_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
@@ -48,6 +51,10 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(test_metrics test/test_metrics.cpp)
   if(TARGET test_metrics)
     target_link_libraries(test_metrics manual_return_core gtest_main ${catkin_LIBRARIES})
+  endif()
+  catkin_add_gtest(test_safe_rdp test/test_safe_rdp.cpp)
+  if(TARGET test_safe_rdp)
+    target_link_libraries(test_safe_rdp manual_return_core gtest_main ${catkin_LIBRARIES})
   endif()
 endif()
 

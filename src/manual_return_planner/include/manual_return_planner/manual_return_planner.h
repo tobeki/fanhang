@@ -38,6 +38,22 @@ enum class ManualReturnStatus {
   INTERNAL_ERROR
 };
 
+// V1.1 Safe-RDP configuration.  All lengths are in metres.  The safety
+// envelope is a sphere of radius R_safe = uav_radius + tracking_margin +
+// extra_margin; a compressed segment must keep at least this clearance.
+struct SafeRdpConfig {
+  bool enabled = true;                       // master switch
+  double uav_radius = 0.25;                  // [m] spherical body envelope
+  double tracking_margin = 0.15;             // [m] measured tracking error
+  double extra_margin = 0.10;                // [m] additional safety margin
+  double voxel_resolution = 0.05;            // [m] VoxelGrid leaf size
+  double collision_check_resolution = 0.05;  // [m] sampling step on segments
+
+  double safeRadius() const {
+    return uav_radius + tracking_margin + extra_margin;
+  }
+};
+
 struct ManualReturnConfig {
   // Historical trajectory preprocessing and basic RDP [SI units].
   double min_point_spacing = 0.03;      // [m]
@@ -75,6 +91,7 @@ struct ManualReturnConfig {
   double home_position_tolerance = 0.3; // [m]
   double record_frequency = 10.0;       // [Hz]
   std::string world_frame = "world";
+    SafeRdpConfig safe_rdp;
 };
 
 struct ReturnPlanResult {
@@ -91,6 +108,18 @@ struct ReturnPlanResult {
   double compression_ratio = 0.0;
   double max_rdp_deviation = 0.0;
   double planning_time_ms = 0.0;
+    // Safe-RDP V1.1 outputs.
+    std::vector<ReturnWaypoint> safe_waypoints;
+    bool safe_rdp_enabled = false;
+    int collision_check_count = 0;
+    int unsafe_segments = 0;
+    int validated_segments = 0;
+    double min_clearance_m = 0.0;
+    bool clearance_available = false;
+    int voxelized_cloud_size = 0;
+    std::size_t original_rdp_point_num = 0;
+    std::size_t safe_point_num = 0;
+    int shortcut_count = 0;
   std::string message;
 };
 
@@ -203,6 +232,10 @@ struct ReturnMetrics {
   std::string memory_usage_mb = "unknown";
   int pointcloud_size = 0;
   int voxelized_cloud_size = 0;
+    bool safe_rdp_enabled = false;
+    int safe_path_points = 0;
+    int original_rdp_points = 0;
+    int shortcut_count = 0;
 };
 
 // Computes algorithm-agnostic quality metrics that do not depend on the

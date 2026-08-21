@@ -16,6 +16,11 @@ control_takeover_delay: 1.5
 command_frequency: 100.0
 turn_angle_threshold_deg: 20.0
 turn_analysis_distance: 0.5
+# V1.0.4 waypoint heading control.
+#   tangent_interpolation : legacy (yaw sweeps across the whole segment)
+#   waypoint_hold        : hold segment heading, turn near the waypoint
+yaw_mode: waypoint_hold
+yaw_transition_radius: 0.2
 enable_return_command_output: false
 require_control_takeover: false
 
@@ -40,3 +45,16 @@ tracking_margin: 0.05
 map_margin: 0.05
 extra_safety_margin: 0.05
 collision_check_step: 0.1
+
+# =====================================================================
+# Safe-RDP V1.1 (enabled).  Validates the compressed return path against
+# the PCD map.  R_safe = uav_radius + tracking_margin + extra_margin.
+# V1.1.0 only validates (no detour / replan / shortcut optimization).
+# =====================================================================
+safe_rdp:
+  enabled: true
+  uav_radius: 0.25
+  tracking_margin: 0.15
+  extra_margin: 0.10
+  voxel_resolution: 0.05
+  collision_check_resolution: 0.05

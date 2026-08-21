@@ -55,7 +55,7 @@ Visualization Manager:
       Buffer Length: 1
       Class: rviz/Path
       Color: 0; 0; 255
-      Enabled: true
+      Enabled: false
       Head Diameter: 0.10000000149011612
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
@@ -74,11 +74,27 @@ Visualization Manager:
       Shaft Length: 0.20000000298023224
       Topic: /manual_return/history_path
       Unreliable: false
-      Value: true
+      Value: false
     - Class: rviz/Marker
       Enabled: true
       Marker Topic: /manual_return/return_path_line
       Name: ReturnPathLine
+      Namespaces:
+        manual_return: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /manual_return/safe_return_path
+      Name: SafeReturnPath
+      Namespaces:
+        manual_return_safe: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /manual_return/yaw_marker
+      Name: YawMarker
       Namespaces:
         {}
       Queue Size: 100
@@ -88,7 +104,7 @@ Visualization Manager:
       Marker Topic: /manual_return/key_points
       Name: KeyPoints
       Namespaces:
-        {}
+        manual_return_key_points: true
       Queue Size: 100
       Value: true
     - Class: rviz/Marker
@@ -96,14 +112,14 @@ Visualization Manager:
       Marker Topic: /manual_return/home_marker
       Name: HomeMarker
       Namespaces:
-        {}
+        manual_return: true
       Queue Size: 100
       Value: true
     - Alpha: 1
       Buffer Length: 1
       Class: rviz/Path
       Color: 255; 0; 0
-      Enabled: true
+      Enabled: false
       Head Diameter: 0.10000000149011612
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
@@ -122,7 +138,7 @@ Visualization Manager:
       Shaft Length: 0.20000000298023224
       Topic: /manual_return/rdp_path
       Unreliable: false
-      Value: true
+      Value: false
     - Alpha: 1
       Buffer Length: 1
       Class: rviz/Path
@@ -175,7 +191,7 @@ Visualization Manager:
       Buffer Length: 1
       Class: rviz/Path
       Color: 255; 255; 0
-      Enabled: false
+      Enabled: true
       Head Diameter: 0.10000000149011612
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
@@ -194,13 +210,13 @@ Visualization Manager:
       Shaft Length: 0.20000000298023224
       Topic: /manual_return/preprocessed_path
       Unreliable: false
-      Value: false
+      Value: true
     - Class: rviz/Marker
       Enabled: true
       Marker Topic: /manual_return/home
       Name: ReturnHome
       Namespaces:
-        {}
+        manual_return: true
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -315,8 +331,8 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 2.25
-            Min Value: 0.05000000074505806
+            Max Value: 2.3499999046325684
+            Min Value: 0.15000000596046448
             Value: true
           Axis: Z
           Channel Name: intensity
@@ -971,7 +987,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 8.320514678955078
+      Distance: 13.423848152160645
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1

@@ -30,6 +30,14 @@ namespace mrp = manual_return_planner;
 
 namespace {
 
+// Smallest signed angular difference in (-pi, pi].
+double unwrapYawDelta(double target, double current) {
+  double delta = target - current;
+  while (delta > M_PI) delta -= 2.0 * M_PI;
+  while (delta < -M_PI) delta += 2.0 * M_PI;
+  return delta;
+}
+
 // Conservative trapezoidal velocity profile along the polyline arc length.
 //
 // The profile is TIME-driven: the reference speed is v = accel * t during the
@@ -193,6 +201,17 @@ class ManualReturnNode {
     private_nh_.param("extra_safety_margin", config_.extra_safety_margin, 0.05);
     private_nh_.param("collision_check_step", config_.collision_check_step,
                       0.1);
+    private_nh_.param("safe_rdp/enabled", config_.safe_rdp.enabled, true);
+    private_nh_.param("safe_rdp/uav_radius", config_.safe_rdp.uav_radius,
+                      0.25);
+    private_nh_.param("safe_rdp/tracking_margin",
+                      config_.safe_rdp.tracking_margin, 0.15);
+    private_nh_.param("safe_rdp/extra_margin", config_.safe_rdp.extra_margin,
+                      0.10);
+    private_nh_.param("safe_rdp/voxel_resolution",
+                      config_.safe_rdp.voxel_resolution, 0.05);
+    private_nh_.param("safe_rdp/collision_check_resolution",
+                      config_.safe_rdp.collision_check_resolution, 0.05);
     private_nh_.param("return_cruise_speed", return_speed_, 0.5);
     config_.return_cruise_speed = return_speed_;
     private_nh_.param("max_return_acceleration", max_return_accel_, 1.5);
@@ -209,6 +228,8 @@ class ManualReturnNode {
     private_nh_.param("turn_angle_threshold_deg", turn_angle_threshold_deg_,
                       20.0);
     private_nh_.param("turn_analysis_distance", turn_analysis_distance_, 0.5);
+    private_nh_.param("yaw_mode", yaw_mode_, std::string("waypoint_hold"));
+    private_nh_.param("yaw_transition_radius", yaw_transition_radius_, 0.2);
     private_nh_.param("enable_return_command_output", enable_command_output_,
                       false);
     private_nh_.param("return_command_topic", return_command_topic_,
@@ -242,6 +263,10 @@ class ManualReturnNode {
         "/manual_return/key_points", 1, true);
     home_marker_pub_ = nh_.advertise<visualization_msgs::Marker>(
         "/manual_return/home_marker", 1, true);
+    safe_path_pub_ = nh_.advertise<visualization_msgs::Marker>(
+        "/manual_return/safe_return_path", 1, true);
+    yaw_marker_pub_ = nh_.advertise<visualization_msgs::Marker>(
+        "/manual_return/yaw_marker", 1, true);
     preprocessed_pub_ =
         nh_.advertise<nav_msgs::Path>("/manual_return/preprocessed_path", 1,
                                       true);
@@ -343,6 +368,16 @@ class ManualReturnNode {
     double cross_track_xy = 0.0;
     double vertical_error = 0.0;
     ReturnPhase phase = ReturnPhase::CRUISE;
+  };
+
+  struct YawSample {
+    double timestamp = 0.0;
+    double current_x = 0.0, current_y = 0.0, current_z = 0.0;
+    double current_yaw = 0.0;
+    double target_yaw = 0.0;
+    double yaw_error = 0.0;
+    int segment_id = -1;
+    std::string yaw_mode;
   };
 
   mrp::TrajectoryPoint odomToPoint(const nav_msgs::Odometry& odom) const {
@@ -616,8 +651,42 @@ class ManualReturnNode {
     last_projected_segment_ = 0;
   }
 
+  // V1.0.4: compute the heading for the current position.
+  //   tangent_interpolation : legacy behaviour (yaw sweeps across the whole
+  //                           segment).
+  //   waypoint_hold        : hold the segment heading during flight, then
+  //                           transition to the next segment heading within
+  //                           yaw_transition_radius of the waypoint.
+  double computeReturnYaw(int segment, double alpha,
+                          const Eigen::Vector3d& position,
+                          const std::vector<mrp::ReturnWaypoint>& waypoints) const {
+    if (waypoints.size() < 2) return 0.0;
+    if (segment < 0) segment = 0;
+    if (segment + 1 >= static_cast<int>(waypoints.size()))
+      segment = static_cast<int>(waypoints.size()) - 2;
+    const double yaw_cur = waypoints[segment].yaw;
+    const double yaw_next = waypoints[segment + 1].yaw;
+
+    if (yaw_mode_ != "waypoint_hold") {
+      // Legacy tangent_interpolation: linear sweep across the whole segment.
+      return yaw_cur + alpha * (yaw_next - yaw_cur);
+    }
+
+    // waypoint_hold: keep the segment heading, then turn near the waypoint.
+    const double delta = unwrapYawDelta(yaw_next, yaw_cur);
+    const Eigen::Vector3d wp = waypoints[segment + 1].position;
+    const double dist_to_wp = (wp - position).norm();
+    double transition = 0.0;
+    if (yaw_transition_radius_ > 1e-9 && dist_to_wp < yaw_transition_radius_) {
+      transition = 1.0 - dist_to_wp / yaw_transition_radius_;
+      transition = std::max(0.0, std::min(1.0, transition));
+    }
+    return yaw_cur + transition * delta;
+  }
+
   void locateSegment(double s, double speed, Eigen::Vector3d* position,
-                     Eigen::Vector3d* velocity, double* yaw) {
+                     Eigen::Vector3d* velocity, double* yaw,
+                     int* segment_out = nullptr) {
     const std::vector<mrp::ReturnWaypoint>& waypoints =
         last_result_.return_waypoints;
     std::size_t segment = 0;
@@ -639,8 +708,9 @@ class ManualReturnNode {
     const double direction_length = direction.norm();
     if (direction_length > 1e-9) direction /= direction_length;
     *velocity = speed * direction;
-    *yaw = waypoints[segment].yaw +
-           alpha * (waypoints[segment + 1].yaw - waypoints[segment].yaw);
+    *yaw = computeReturnYaw(static_cast<int>(segment), alpha, *position,
+                            waypoints);
+    if (segment_out) *segment_out = static_cast<int>(segment);
   }
 
   // Project an actual position onto the planned polyline with monotonic path
@@ -728,14 +798,37 @@ class ManualReturnNode {
     Eigen::Vector3d position;
     Eigen::Vector3d velocity;
     double yaw = 0.0;
+    int segment_id = -1;
     if (s >= total_length - 1e-9) {
       position = waypoints.back().position;
       velocity = Eigen::Vector3d::Zero();
       yaw = waypoints.back().yaw;
+      segment_id = static_cast<int>(waypoints.size()) - 1;
     } else {
-      locateSegment(s, v, &position, &velocity, &yaw);
+      locateSegment(s, v, &position, &velocity, &yaw, &segment_id);
     }
     publishCommand(position, velocity, yaw);
+
+    // V1.0.4: record the heading command and the actual heading.
+    double actual_yaw = yaw;
+    if (have_odom_) {
+      tf::Quaternion quaternion;
+      tf::quaternionMsgToTF(latest_odom_.pose.pose.orientation, quaternion);
+      double roll = 0.0, pitch = 0.0;
+      tf::Matrix3x3(quaternion).getRPY(roll, pitch, actual_yaw);
+    }
+    YawSample yaw_sample;
+    yaw_sample.timestamp = now.toSec();
+    yaw_sample.current_x = position.x();
+    yaw_sample.current_y = position.y();
+    yaw_sample.current_z = position.z();
+    yaw_sample.current_yaw = actual_yaw;
+    yaw_sample.target_yaw = yaw;
+    yaw_sample.yaw_error = unwrapYawDelta(yaw, actual_yaw);
+    yaw_sample.segment_id = segment_id;
+    yaw_sample.yaw_mode = yaw_mode_;
+    yaw_log_.push_back(yaw_sample);
+    publishYawMarker(position, yaw);
 
     if (have_odom_) {
       Eigen::Vector3d actual(latest_odom_.pose.pose.position.x,
@@ -779,6 +872,7 @@ class ManualReturnNode {
         state_ = FINISHED;
         publishStatus("FINISHED");
         writeTrackingLogs();
+        writeYawLog();
         writeMetricsFile();
         ROS_INFO("[ManualReturn] Manual return completed.");
       }
@@ -857,6 +951,7 @@ class ManualReturnNode {
       history_.clear();
       tracking_log_.clear();
       executed_return_path_.clear();
+      yaw_log_.clear();
       last_result_ = mrp::ReturnPlanResult();
       trigger_odom_valid_ = false;
       return_start_error_ = 0.0;
@@ -1023,6 +1118,49 @@ class ManualReturnNode {
         &error);
   }
 
+  void writeYawLog() {
+    if (run_output_dir_.empty()) return;
+    const std::string csv_path = run_output_dir_ + "/return_yaw_log.csv";
+    std::ofstream output(csv_path.c_str());
+    if (output.is_open()) {
+      output << "timestamp,current_x,current_y,current_z,current_yaw,"
+                "target_yaw,yaw_error,current_segment_id,yaw_mode\n";
+      output << std::setprecision(12);
+      for (const YawSample& s : yaw_log_) {
+        output << s.timestamp << ',' << s.current_x << ',' << s.current_y
+               << ',' << s.current_z << ',' << s.current_yaw << ','
+               << s.target_yaw << ',' << s.yaw_error << ','
+               << s.segment_id << ',' << s.yaw_mode << '\n';
+      }
+      output.close();
+      ROS_INFO_STREAM("[ManualReturn] yaw log written to " << csv_path);
+    } else {
+      ROS_WARN_STREAM("[ManualReturn] cannot write " << csv_path);
+    }
+  }
+
+  void publishYawMarker(const Eigen::Vector3d& position, double yaw) {
+    visualization_msgs::Marker arrow;
+    arrow.header.frame_id = world_frame_;
+    arrow.header.stamp = ros::Time::now();
+    arrow.ns = "manual_return_yaw";
+    arrow.id = 0;
+    arrow.type = visualization_msgs::Marker::ARROW;
+    arrow.action = visualization_msgs::Marker::ADD;
+    arrow.pose.position.x = position.x();
+    arrow.pose.position.y = position.y();
+    arrow.pose.position.z = position.z();
+    arrow.pose.orientation = tf::createQuaternionMsgFromYaw(yaw);
+    arrow.scale.x = 0.6;
+    arrow.scale.y = 0.08;
+    arrow.scale.z = 0.15;
+    arrow.color.r = 1.0;
+    arrow.color.g = 1.0;
+    arrow.color.b = 0.0;
+    arrow.color.a = 1.0;
+    yaw_marker_pub_.publish(arrow);
+  }
+
   void writeMetricsFile() {
     if (run_output_dir_.empty()) return;
 
@@ -1060,11 +1198,19 @@ class ManualReturnNode {
     metrics.mean_deviation_m = deviation.mean;
     metrics.p95_deviation_m = deviation.p95;
 
-    // Safety: V1 does not run a point-cloud collision check.
-    metrics.clearance_available = false;
-    metrics.unsafe_segments = 0;
-    metrics.validated_segments = 0;
-    metrics.collision_check_count = 0;
+    // Safety: V1.1 Safe-RDP collision check (clearance_available=false
+    // means no PCD map was present, so the check could not run).
+    metrics.safe_rdp_enabled = last_result_.safe_rdp_enabled;
+    metrics.clearance_available = last_result_.clearance_available;
+    metrics.min_clearance_m = last_result_.min_clearance_m;
+    metrics.unsafe_segments = last_result_.unsafe_segments;
+    metrics.validated_segments = last_result_.validated_segments;
+    metrics.collision_check_count = last_result_.collision_check_count;
+    metrics.voxelized_cloud_size = last_result_.voxelized_cloud_size;
+    metrics.safe_path_points = static_cast<int>(last_result_.safe_point_num);
+    metrics.original_rdp_points =
+        static_cast<int>(last_result_.original_rdp_point_num);
+    metrics.shortcut_count = last_result_.shortcut_count;
 
     // Tracking (spatial decomposition).
     std::vector<double> cross3d, vertical, along_abs;
@@ -1097,7 +1243,6 @@ class ManualReturnNode {
     // Performance.
     metrics.pointcloud_size =
         map_cloud_ ? static_cast<int>(map_cloud_->size()) : 0;
-    metrics.voxelized_cloud_size = 0;
     metrics.memory_usage_mb = "unknown";
 
     // return_metrics.csv
@@ -1112,7 +1257,9 @@ class ManualReturnNode {
              "validated_segments,collision_check_count,cross_track_p95,"
              "cross_track_max,along_track_p95,vertical_error_p95,"
              "final_home_error_m,return_duration_s,planning_time_ms,"
-             "memory_usage_mb,pointcloud_size,voxelized_cloud_size\n";
+             "memory_usage_mb,pointcloud_size,voxelized_cloud_size,"
+             "safe_rdp_enabled,safe_path_points,original_rdp_points,"
+             "shortcut_count\n";
       out << run_id_ << ',' << metrics.scenario << ','
           << metrics.original_points << ','
           << metrics.original_length_m << ',' << metrics.simplified_points << ','
@@ -1133,7 +1280,11 @@ class ManualReturnNode {
           << metrics.final_home_error_m << ',' << metrics.return_duration_s
           << ',' << metrics.planning_time_ms << ',' << metrics.memory_usage_mb
           << ',' << metrics.pointcloud_size << ','
-          << metrics.voxelized_cloud_size << '\n';
+          << metrics.voxelized_cloud_size << ','
+          << (metrics.safe_rdp_enabled ? "true" : "false") << ','
+          << metrics.safe_path_points << ','
+          << metrics.original_rdp_points << ','
+          << metrics.shortcut_count << '\n';
       out.close();
     } else {
       ROS_WARN_STREAM("[ManualReturn] cannot write " << csv_path);
@@ -1187,6 +1338,12 @@ class ManualReturnNode {
       summary << "  pointcloud size: " << metrics.pointcloud_size << "\n";
       summary << "  voxelized cloud size: " << metrics.voxelized_cloud_size
               << "\n";
+      summary << "  safe_rdp_enabled: "
+              << (metrics.safe_rdp_enabled ? "true" : "false") << "\n";
+      summary << "  safe_path_points: " << metrics.safe_path_points << "\n";
+      summary << "  original_rdp_points: " << metrics.original_rdp_points
+              << "\n";
+      summary << "  shortcut_count: " << metrics.shortcut_count << "\n";
       summary.close();
     }
 
@@ -1249,6 +1406,32 @@ class ManualReturnNode {
       line.points.push_back(p);
     }
     rdp_line_pub_.publish(line);
+
+    // Safe-RDP path: green line (== RDP path in V1.1.0, which only
+    // validates and never rewrites the compressed path).
+    visualization_msgs::Marker safe_line;
+    safe_line.header.frame_id = world_frame_;
+    safe_line.header.stamp = ros::Time::now();
+    safe_line.ns = "manual_return_safe";
+    safe_line.id = 0;
+    safe_line.type = visualization_msgs::Marker::LINE_STRIP;
+    safe_line.action = visualization_msgs::Marker::ADD;
+    safe_line.scale.x = 0.08;
+    safe_line.color.r = 0.0;
+    safe_line.color.g = 1.0;
+    safe_line.color.b = 0.0;
+    safe_line.color.a = 1.0;
+    const std::vector<mrp::ReturnWaypoint>& safe_wps =
+        result.safe_waypoints.empty() ? result.return_waypoints
+                                      : result.safe_waypoints;
+    for (const mrp::ReturnWaypoint& waypoint : safe_wps) {
+      geometry_msgs::Point p;
+      p.x = waypoint.position.x();
+      p.y = waypoint.position.y();
+      p.z = waypoint.position.z();
+      safe_line.points.push_back(p);
+    }
+    safe_path_pub_.publish(safe_line);
 
     // Key points: one sphere per simplified waypoint.
     visualization_msgs::MarkerArray key_points;
@@ -1346,17 +1529,22 @@ class ManualReturnNode {
   double current_v_ = 0.0;
   double turn_angle_threshold_deg_ = 20.0;
   double turn_analysis_distance_ = 0.5;
+  std::string yaw_mode_ = "waypoint_hold";
+  double yaw_transition_radius_ = 0.2;
   std::vector<double> turn_center_s_;
   int last_projected_segment_ = 0;
   std::string run_output_dir_;
   std::string run_id_;
   ros::Time takeover_start_, return_start_time_, last_exec_time_;
   std::vector<TrackingSample> tracking_log_;
+  std::vector<YawSample> yaw_log_;
   std::vector<mrp::TrajectoryPoint> executed_return_path_;
   std::mutex mutex_;
   ros::Publisher raw_pub_, preprocessed_pub_, reversed_pub_, rdp_pub_, home_pub_,
       map_pub_;
   ros::Publisher history_pub_, rdp_line_pub_, key_points_pub_, home_marker_pub_;
+  ros::Publisher safe_path_pub_;
+  ros::Publisher yaw_marker_pub_;
   ros::Publisher command_pub_, mandatory_stop_pub_, status_pub_;
   ros::Subscriber odom_sub_, map_sub_;
   ros::ServiceServer trigger_service_, reset_service_;

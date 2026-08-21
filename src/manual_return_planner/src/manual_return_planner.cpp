@@ -1,4 +1,5 @@
 #include "manual_return_planner/manual_return_planner.h"
+#include "manual_return_planner/safe_rdp.h"
 
 #include <algorithm>
 #include <chrono>
@@ -426,7 +427,6 @@ ReturnPlanResult ManualReturnPlanner::planManualReturn(
     const std::vector<TrajectoryPoint>& flown_trajectory,
     const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& map_cloud,
     const ManualReturnConfig& config) const {
-  (void)map_cloud;  // V1 does not infer shortcuts from unobserved PCD space.
   ReturnPlanResult result;
   result.original_points = flown_trajectory;
   result.raw_point_num = flown_trajectory.size();
@@ -502,7 +502,44 @@ ReturnPlanResult ManualReturnPlanner::planManualReturn(
                                  ? 0.0
                                  : static_cast<double>(result.final_point_num) /
                                        static_cast<double>(result.raw_point_num);
-  result.status = result.final_point_num < result.preprocessed_point_num
+      // --- Safe-RDP V1.1.0: validate the compressed path against the PCD. ---
+    result.safe_waypoints = result.return_waypoints;
+    result.safe_rdp_enabled = config.safe_rdp.enabled;
+    result.original_rdp_point_num = result.return_waypoints.size();
+    result.safe_point_num = result.return_waypoints.size();
+    result.shortcut_count = 0;  // V1.1.0 validates only; no shortcut optimization
+
+    if (config.safe_rdp.enabled && map_cloud && !map_cloud->empty()) {
+      SafeRdpPlanner safe_planner;
+      const SafeRdpResult safe =
+          safe_planner.validate(result.return_waypoints, map_cloud,
+                                config.safe_rdp);
+      result.clearance_available = safe.clearance_available;
+      result.min_clearance_m = safe.min_clearance_m;
+      result.collision_check_count = safe.collision_check_count;
+      result.unsafe_segments = safe.unsafe_segments;
+      result.validated_segments = safe.validated_segments;
+      result.voxelized_cloud_size = safe.voxelized_cloud_size;
+      result.safe_waypoints = safe.safe_path;
+      result.safe_point_num = result.safe_waypoints.size();
+      if (!safe.safe) {
+        result.status = ManualReturnStatus::NO_SAFE_PATH;
+        result.message = safe.message;
+        result.planning_time_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+        return result;
+      }
+    } else {
+      result.clearance_available = false;
+      result.min_clearance_m = 0.0;
+      result.collision_check_count = 0;
+      result.unsafe_segments = 0;
+      result.validated_segments = 0;
+      result.voxelized_cloud_size = 0;
+    }
+
+result.status = result.final_point_num < result.preprocessed_point_num
                       ? ManualReturnStatus::SUCCESS_RDP
                       : ManualReturnStatus::SUCCESS_DENSE_BACKTRACK;
   result.message = warning.empty() ? "manual return path planned" : warning;

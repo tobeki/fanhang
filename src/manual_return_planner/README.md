@@ -1,4 +1,4 @@
-# Manual Return Planner V1.0.3
+# Manual Return Planner V1.1
 
 This package implements manual-mode return based on the vehicle's measured
 flight history. It validates ordered samples, removes only near-duplicate
@@ -506,3 +506,94 @@ python3 scripts/check_benchmark_runs.py  --base ~/fanhang/logs/manual_return_out
   guarantees. Safe-RDP (historical corridor, PCD KD-tree collision checks,
   vehicle envelope, shortcut-ratio rejection) is the next stage and will use
   the tracking-error data collected here.
+
+
+## V1.1 Safe-RDP (basic validation)
+
+V1.1 adds a PCD-constrained safety validation step on top of the V1.0
+Reverse + 3D RDP pipeline.  It is **not** real-time avoidance, dynamic
+planning, or re-planning: it only *validates* the already-compressed return
+path against the map and rejects unsafe compression.
+
+Components:
+
+- `include/manual_return_planner/safe_rdp.h` + `src/safe_rdp.cpp`:
+  `SafeRdpPlanner::validate(rdp_path, map_cloud, config)`.
+  It voxel-downsamples the PCD (VoxelGrid), builds a `pcl::KdTreeFLANN`, and
+  samples every segment at `collision_check_resolution`, measuring the nearest
+  obstacle distance.  A segment is unsafe if any sample is closer than
+  `R_safe`.
+- `SafeRdpConfig` (in `manual_return_planner.h`): master switch plus the safety
+  envelope.  `R_safe = uav_radius + tracking_margin + extra_margin`
+  (= 0.25 + 0.15 + 0.10 = **0.50 m** by default).
+- `planManualReturn(...)` now runs the validation when `safe_rdp.enabled` and a
+  non-empty PCD is supplied; on any unsafe segment it returns
+  `ManualReturnStatus::NO_SAFE_PATH` (the node enters `FAILED`).  When no PCD
+  is present, `clearance_available` stays `false` and the V1.0 behaviour is
+  preserved.
+
+New configuration (`config/manual_return.yaml`):
+
+```yaml
+safe_rdp:
+  enabled: true
+  uav_radius: 0.25
+  tracking_margin: 0.15
+  extra_margin: 0.10
+  voxel_resolution: 0.05
+  collision_check_resolution: 0.05
+```
+
+New metrics in `return_metrics.csv` / `return_summary.txt`:
+
+```text
+safe_rdp_enabled, safe_path_points, original_rdp_points, shortcut_count
+```
+
+plus the existing `collision_check_count`, `unsafe_segments`, `min_clearance_m`,
+`clearance_available`, `validated_segments`, `voxelized_cloud_size` are now
+populated from the Safe-RDP result (previously hard-coded to "not available").
+
+New RViz topic:
+
+```text
+/manual_return/safe_return_path   (green LINE_STRIP, == RDP path in V1.1.0)
+```
+
+V1.1.0 deliberately does **not** implement shortcut optimization, detour,
+re-planning, or new-path search.  A colliding path simply fails
+(`NO_SAFE_PATH`).
+
+Tests: `test/test_safe_rdp.cpp` adds 3 cases (clear path passes, obstacle on a
+segment fails, obstacle beyond `R_safe` passes).  Offline benchmark tool:
+`src/safe_rdp_benchmark.cpp` (`safe_rdp_benchmark <scenario> <csv> <pcd>`).
+
+
+## V1.0.4 Waypoint heading control
+
+The return executor previously interpolated yaw linearly **across each whole
+segment** (in `locateSegment`), so on a turn (e.g. 0 deg -> 90 deg) the drone
+kept rotating while flying a straight line.  V1.0.4 changes the heading
+behaviour so the drone holds the current segment heading and only turns near a
+waypoint.
+
+New configuration (`config/manual_return.yaml`):
+
+```yaml
+yaw_mode: waypoint_hold        # tangent_interpolation | waypoint_hold
+yaw_transition_radius: 0.2     # [m] turn happens within this radius of a waypoint
+```
+
+- `tangent_interpolation`: legacy behaviour (kept for comparison).
+- `waypoint_hold` (default): the reference yaw stays at the current segment
+  heading `atan2(dy, dx)` during flight, then transitions to the next segment
+  heading within `yaw_transition_radius` of the waypoint.  The return **path
+  geometry is unchanged** (same waypoint count and path length); only the yaw
+  reference changes.
+
+New outputs:
+
+- `return_yaw_log.csv`: `timestamp,current_x,current_y,current_z,current_yaw,
+  target_yaw,yaw_error,current_segment_id,yaw_mode`.
+- RViz topic `/manual_return/yaw_marker` (yellow arrow) showing the current
+  heading reference.
