@@ -58,3 +58,23 @@ safe_rdp:
   extra_margin: 0.10
   voxel_resolution: 0.05
   collision_check_resolution: 0.05
+
+# =====================================================================
+# V2.0 Historical trajectory understanding (detection only, no deletion).
+# =====================================================================
+trajectory_analysis:
+  segment_angle_threshold_deg: 30.0
+  segment_speed_change_threshold: 0.5
+  dwell_max_speed: 0.1
+  dwell_radius: 0.15
+  dwell_min_time: 2.0
+  backtrack_epsilon_entry: 0.5
+  backtrack_min_spur_ratio: 3.0
+  backtrack_min_spur_reach: 0.5
+  backtrack_apex_revisit_radius: 0.5
+  # Calibrated from real flight (2026-08-24): outbound/return lateral offset
+  # measured ~1.0 m, so 0.3 m missed every real overlap.
+  overlap_distance_threshold: 1.2
+  overlap_angle_threshold_deg: 30.0
+  overlap_min_segment_length: 0.5
+  overlap_min_fraction: 0.5

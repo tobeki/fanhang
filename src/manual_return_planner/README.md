@@ -597,3 +597,103 @@ New outputs:
   target_yaw,yaw_error,current_segment_id,yaw_mode`.
 - RViz topic `/manual_return/yaw_marker` (yellow arrow) showing the current
   heading reference.
+
+
+## V2.0 Historical trajectory understanding (detection only)
+
+V2.0 adds a **read-only** structural analysis of the forward history
+(Home -> current position).  It does NOT delete points, does NOT change the
+return path, and does NOT touch RDP / Safe-RDP / CommandGate.
+
+New module `trajectory_analysis/` (headers in
+`include/manual_return_planner/trajectory_analysis/`, sources in
+`src/manual_return_planner/trajectory_analysis/`):
+
+- `TrajectorySegmenter`: splits the forward history on direction changes
+  (`segment_angle_threshold_deg`) and sudden speed changes.
+- `DwellDetector`: finds maximal runs of consecutive slow points that are long
+  enough (`dwell_min_time`) and spatially small (`dwell_radius`).
+- `BacktrackDetector`: geometric + time dead-end spur detection (entry ~= exit,
+  detour ratio, excursion, opposite direction, dead-end check).
+- `OverlapDetector`: repeated-traversal detection between non-adjacent segments
+  (spatial distance + direction alignment).
+- `TrajectoryAnalysisManager`: orchestrates the four detectors and labels
+  segments (`NORMAL` / `DWELL` / `BACKTRACK_CANDIDATE` / `OVERLAP_CANDIDATE`).
+
+Configuration (`config/manual_return.yaml`):
+
+```yaml
+trajectory_analysis:
+  segment_angle_threshold_deg: 30.0
+  segment_speed_change_threshold: 0.5
+  dwell_max_speed: 0.1
+  dwell_radius: 0.15
+  dwell_min_time: 2.0
+  backtrack_epsilon_entry: 0.5
+  backtrack_min_spur_ratio: 3.0
+  backtrack_min_spur_reach: 0.5
+  overlap_distance_threshold: 0.3
+  overlap_angle_threshold_deg: 30.0
+  overlap_min_segment_length: 0.5
+```
+
+Outputs (written per run):
+
+```text
+trajectory_analysis.csv          (per-segment: id, range, type, length, duration, confidence, reason)
+trajectory_edit_candidates.csv   (per-candidate: id, type, range, confidence, reason, metrics)
+```
+
+RViz topic `/manual_return/trajectory_analysis_marker` (MarkerArray, one
+LINE_STRIP per segment): blue = NORMAL, yellow = DWELL, red =
+BACKTRACK_CANDIDATE, purple = OVERLAP_CANDIDATE.
+
+Offline tool: `trajectory_analysis_benchmark <scenario> <csv>`.
+Tests: `test/test_trajectory_analysis.cpp` (straight line is NORMAL, dead-end
+spur is BACKTRACK, round-trip is OVERLAP, stationary hover is DWELL).
+
+
+### V2.0 detector calibration (2026-08-24 real-flight fixes)
+
+The first V2.0 build passed hand-built fixtures but silently detected **zero**
+backtrack and **zero** overlap on a real 52.6 m flight that clearly contained
+both.  Four defects were found and fixed:
+
+1. **Dead-end check rejected every real spur.**  The check required that no
+   interior point of `[i, j]` has any neighbour outside `[i, j]`.  On real data
+   this can never hold: near the spur "neck" the outbound and return legs of the
+   spur are inherently close to each other, which is precisely what defines a
+   backtrack.  687 candidates passed all four geometric tests and all 687 were
+   rejected.  Now only the **spur apex** (the point furthest from the entry) is
+   tested for revisits outside `[i, j]`, controlled by
+   `backtrack_apex_revisit_radius`.
+2. **Overlap threshold was ~3x too small.**  `overlap_distance_threshold = 0.3`
+   was a guessed initial value.  The outbound and return legs are planned
+   independently, so their measured lateral offset is ~1.0 m.  Recalibrated to
+   `1.2`.
+3. **A pure distance test cannot reject collinear segments that merely touch
+   end-to-end**, so simply relaxing the threshold would create false positives.
+   Added `overlap_min_fraction` (0.5): a large fraction of points on **both**
+   segments must be close, not just the average distance.
+4. **`trajectory_analysis.csv` reported inconsistent reasons.**  The reason
+   lookup used an *intersect* rule while the manager labels with a
+   *fully-within* rule, so `NORMAL` segments were reported with a dwell reason.
+   The lookup now uses fully-within **and** requires the candidate's implied
+   label to equal the segment's label (`segmentTypeForEdit`), because labelling
+   is by severity while confidence is independent.
+
+Additionally, a dwell has a spatial extent of only a few millimetres, so its
+`LINE_STRIP` was invisible at map scale.  Each dwell now also publishes a yellow
+`SPHERE` at its centroid plus a `TEXT_VIEW_FACING` label with its metrics.
+
+Verification after the fixes:
+
+| trajectory | dwell | backtrack | overlap |
+|---|---:|---:|---:|
+| real flight (52.6 m, spur + reverse leg) | 4 | 2 | 2 |
+| straight_long / straight_short / turn90 / s_curve / height_change | 1-3 | 0 | 0 |
+
+`test/data/real_flight_backtrack_overlap.csv` is kept as a regression fixture:
+`TrajectoryAnalysisRealFlight.*` asserts that real backtrack and overlap are
+detected, so a future change cannot silently regress to "fixtures pass, real
+data misses everything".

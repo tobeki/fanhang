@@ -1,4 +1,5 @@
 #include "manual_return_planner/manual_return_planner.h"
+#include "manual_return_planner/trajectory_analysis/trajectory_analysis_manager.h"
 
 #include <geometry_msgs/Point.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -212,6 +213,32 @@ class ManualReturnNode {
                       config_.safe_rdp.voxel_resolution, 0.05);
     private_nh_.param("safe_rdp/collision_check_resolution",
                       config_.safe_rdp.collision_check_resolution, 0.05);
+    private_nh_.param("trajectory_analysis/segment_angle_threshold_deg",
+                      analysis_config_.segment_angle_threshold_deg, 30.0);
+    private_nh_.param("trajectory_analysis/segment_speed_change_threshold",
+                      analysis_config_.segment_speed_change_threshold, 0.5);
+    private_nh_.param("trajectory_analysis/dwell_max_speed",
+                      analysis_config_.dwell_max_speed, 0.1);
+    private_nh_.param("trajectory_analysis/dwell_radius",
+                      analysis_config_.dwell_radius, 0.15);
+    private_nh_.param("trajectory_analysis/dwell_min_time",
+                      analysis_config_.dwell_min_time, 2.0);
+    private_nh_.param("trajectory_analysis/backtrack_epsilon_entry",
+                      analysis_config_.backtrack_epsilon_entry, 0.5);
+    private_nh_.param("trajectory_analysis/backtrack_min_spur_ratio",
+                      analysis_config_.backtrack_min_spur_ratio, 3.0);
+    private_nh_.param("trajectory_analysis/backtrack_min_spur_reach",
+                      analysis_config_.backtrack_min_spur_reach, 0.5);
+    private_nh_.param("trajectory_analysis/backtrack_apex_revisit_radius",
+                      analysis_config_.backtrack_apex_revisit_radius, 0.5);
+    private_nh_.param("trajectory_analysis/overlap_distance_threshold",
+                      analysis_config_.overlap_distance_threshold, 1.2);
+    private_nh_.param("trajectory_analysis/overlap_angle_threshold_deg",
+                      analysis_config_.overlap_angle_threshold_deg, 30.0);
+    private_nh_.param("trajectory_analysis/overlap_min_segment_length",
+                      analysis_config_.overlap_min_segment_length, 0.5);
+    private_nh_.param("trajectory_analysis/overlap_min_fraction",
+                      analysis_config_.overlap_min_fraction, 0.5);
     private_nh_.param("return_cruise_speed", return_speed_, 0.5);
     config_.return_cruise_speed = return_speed_;
     private_nh_.param("max_return_acceleration", max_return_accel_, 1.5);
@@ -267,6 +294,9 @@ class ManualReturnNode {
         "/manual_return/safe_return_path", 1, true);
     yaw_marker_pub_ = nh_.advertise<visualization_msgs::Marker>(
         "/manual_return/yaw_marker", 1, true);
+    analysis_marker_pub_ =
+        nh_.advertise<visualization_msgs::MarkerArray>(
+            "/manual_return/trajectory_analysis_marker", 1, true);
     preprocessed_pub_ =
         nh_.advertise<nav_msgs::Path>("/manual_return/preprocessed_path", 1,
                                       true);
@@ -509,6 +539,10 @@ class ManualReturnNode {
       }
       frozen.push_back(anchor);
     }
+
+    // V2.0: analyze the forward history (Home -> current).  Detection
+    // only; the return path is never modified here.
+    analyzeTrajectory(frozen);
 
     if (!planFrozenTrajectory(frozen)) {
       response.success = false;
@@ -1161,6 +1195,163 @@ class ManualReturnNode {
     yaw_marker_pub_.publish(arrow);
   }
 
+  void analyzeTrajectory(const std::vector<mrp::TrajectoryPoint>& forward) {
+    analysis_result_ = analysis_manager_.analyze(forward, analysis_config_);
+    publishAnalysisMarkers(forward);
+    writeAnalysisFiles();
+    ROS_INFO_STREAM("[ManualReturn] trajectory analysis: "
+                    << analysis_result_.segments.size() << " segments, "
+                    << analysis_result_.dwell_count << " dwell, "
+                    << analysis_result_.backtrack_count << " backtrack, "
+                    << analysis_result_.overlap_count << " overlap candidates");
+  }
+
+  void publishAnalysisMarkers(
+      const std::vector<mrp::TrajectoryPoint>& forward) {
+    visualization_msgs::MarkerArray array;
+    int id = 0;
+    for (const auto& seg : analysis_result_.segments) {
+      visualization_msgs::Marker m;
+      m.header.frame_id = world_frame_;
+      m.header.stamp = ros::Time::now();
+      m.ns = "trajectory_analysis";
+      m.id = id++;
+      m.type = visualization_msgs::Marker::LINE_STRIP;
+      m.action = visualization_msgs::Marker::ADD;
+      m.scale.x = 0.08;
+      m.color.a = 1.0;
+      switch (seg.segment_type) {
+        case mrp::SegmentType::DWELL:
+          m.color.r = 1.0; m.color.g = 1.0; m.color.b = 0.0; break;  // yellow
+        case mrp::SegmentType::BACKTRACK_CANDIDATE:
+          m.color.r = 1.0; m.color.g = 0.0; m.color.b = 0.0; break;  // red
+        case mrp::SegmentType::OVERLAP_CANDIDATE:
+          m.color.r = 1.0; m.color.g = 0.0; m.color.b = 1.0; break;  // purple
+        default:
+          m.color.r = 0.0; m.color.g = 0.0; m.color.b = 1.0; break;  // blue
+      }
+      for (int k = seg.start_index; k <= seg.end_index; ++k) {
+        if (k < 0 || k >= static_cast<int>(forward.size())) continue;
+        geometry_msgs::Point p;
+        p.x = forward[k].position.x();
+        p.y = forward[k].position.y();
+        p.z = forward[k].position.z();
+        m.points.push_back(p);
+      }
+      array.markers.push_back(m);
+    }
+
+    // A dwell is a POINT in space (its spatial extent is only a few
+    // millimetres), so a LINE_STRIP for it degenerates to something invisible
+    // at map scale.  Publish an extra sphere at each dwell centroid, plus a
+    // text label with the dwell duration, so hovering is actually visible.
+    int sphere_id = 1000;
+    for (const auto& c : analysis_result_.edit_candidates) {
+      if (c.type != mrp::EditType::DWELL) continue;
+      Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+      int count = 0;
+      for (int k = c.start_index; k <= c.end_index; ++k) {
+        if (k < 0 || k >= static_cast<int>(forward.size())) continue;
+        centroid += forward[k].position;
+        ++count;
+      }
+      if (count == 0) continue;
+      centroid /= static_cast<double>(count);
+
+      visualization_msgs::Marker sphere;
+      sphere.header.frame_id = world_frame_;
+      sphere.header.stamp = ros::Time::now();
+      sphere.ns = "trajectory_analysis_dwell";
+      sphere.id = sphere_id++;
+      sphere.type = visualization_msgs::Marker::SPHERE;
+      sphere.action = visualization_msgs::Marker::ADD;
+      sphere.pose.position.x = centroid.x();
+      sphere.pose.position.y = centroid.y();
+      sphere.pose.position.z = centroid.z();
+      sphere.pose.orientation.w = 1.0;
+      sphere.scale.x = sphere.scale.y = sphere.scale.z = 0.45;
+      sphere.color.r = 1.0;
+      sphere.color.g = 1.0;
+      sphere.color.b = 0.0;  // yellow
+      sphere.color.a = 0.75;
+      array.markers.push_back(sphere);
+
+      visualization_msgs::Marker label;
+      label.header = sphere.header;
+      label.ns = "trajectory_analysis_dwell_label";
+      label.id = sphere_id++;
+      label.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+      label.action = visualization_msgs::Marker::ADD;
+      label.pose = sphere.pose;
+      label.pose.position.z += 0.5;
+      label.scale.z = 0.3;
+      label.color.r = 1.0;
+      label.color.g = 1.0;
+      label.color.b = 0.0;
+      label.color.a = 1.0;
+      label.text = "DWELL " + c.metrics;
+      array.markers.push_back(label);
+    }
+
+    analysis_marker_pub_.publish(array);
+  }
+
+  void writeAnalysisFiles() {
+    if (run_output_dir_.empty()) return;
+    // Per-segment analysis summary.
+    {
+      const std::string p = run_output_dir_ + "/trajectory_analysis.csv";
+      std::ofstream out(p.c_str());
+      if (out.is_open()) {
+        out << "segment_id,start_index,end_index,type,length,duration,"
+               "confidence,reason\n";
+        out << std::setprecision(12);
+        for (const auto& seg : analysis_result_.segments) {
+          double conf = 0.0;
+          std::string reason;
+          for (const auto& c : analysis_result_.edit_candidates) {
+            // Two rules must hold so the reported reason always explains the
+            // reported type:
+            //  1. fully-within -- identical to TrajectoryAnalysisManager's
+            //     labelling rule, so a NORMAL segment that merely grazes a
+            //     candidate is not given that candidate's reason;
+            //  2. the candidate's implied label equals the segment's label --
+            //     the manager labels by severity while confidence is
+            //     independent, so the highest-confidence candidate is not
+            //     necessarily the one that produced the label.
+            if (c.start_index <= seg.start_index &&
+                seg.end_index <= c.end_index &&
+                mrp::segmentTypeForEdit(c.type) == seg.segment_type &&
+                c.confidence > conf) {
+              conf = c.confidence;
+              reason = c.reason;
+            }
+          }
+          out << seg.segment_id << ',' << seg.start_index << ',' << seg.end_index
+              << ',' << mrp::segmentTypeToString(seg.segment_type) << ','
+              << seg.length << ',' << seg.duration << ',' << conf << ','
+              << reason << '\n';
+        }
+        out.close();
+      }
+    }
+    // Edit candidates.
+    {
+      const std::string p = run_output_dir_ + "/trajectory_edit_candidates.csv";
+      std::ofstream out(p.c_str());
+      if (out.is_open()) {
+        out << "candidate_id,type,start_index,end_index,confidence,reason,"
+               "metrics\n";
+        for (const auto& c : analysis_result_.edit_candidates) {
+          out << c.candidate_id << ',' << mrp::editTypeToString(c.type) << ','
+              << c.start_index << ',' << c.end_index << ',' << c.confidence << ','
+              << c.reason << ',' << c.metrics << '\n';
+        }
+        out.close();
+      }
+    }
+  }
+
   void writeMetricsFile() {
     if (run_output_dir_.empty()) return;
 
@@ -1515,6 +1706,9 @@ class ManualReturnNode {
   mrp::ManualReturnConfig config_;
   mrp::ManualReturnPlanner planner_;
   mrp::ReturnPlanResult last_result_;
+  mrp::TrajectoryAnalysisConfig analysis_config_;
+  mrp::TrajectoryAnalysisManager analysis_manager_;
+  mrp::TrajectoryAnalysisResult analysis_result_;
   std::vector<mrp::TrajectoryPoint> history_;
   nav_msgs::Odometry latest_odom_;
   pcl::PointCloud<pcl::PointXYZ>::Ptr map_cloud_;
@@ -1545,6 +1739,7 @@ class ManualReturnNode {
   ros::Publisher history_pub_, rdp_line_pub_, key_points_pub_, home_marker_pub_;
   ros::Publisher safe_path_pub_;
   ros::Publisher yaw_marker_pub_;
+  ros::Publisher analysis_marker_pub_;
   ros::Publisher command_pub_, mandatory_stop_pub_, status_pub_;
   ros::Subscriber odom_sub_, map_sub_;
   ros::ServiceServer trigger_service_, reset_service_;

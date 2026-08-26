@@ -5,6 +5,7 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
+        - /TrajectoryAnalysis1
         - /Drone01
         - /Drone01/LocalCloud1
         - /Drone11
@@ -24,7 +25,7 @@ Panels:
         - /Drone71/LocalCloud1
         - /Drone71/Exp_traj1
         - /PointCloud24
-      Splitter Ratio: 0.5352941155433655
+      Splitter Ratio: 0.6617646813392639
     Tree Height: 639
   - Class: rviz/Selection
     Name: Selection
@@ -96,7 +97,17 @@ Visualization Manager:
       Marker Topic: /manual_return/yaw_marker
       Name: YawMarker
       Namespaces:
-        {}
+        manual_return_yaw: true
+      Queue Size: 100
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /manual_return/trajectory_analysis_marker
+      Name: TrajectoryAnalysis
+      Namespaces:
+        trajectory_analysis: true
+        trajectory_analysis_dwell: true
+        trajectory_analysis_dwell_label: true
       Queue Size: 100
       Value: true
     - Class: rviz/MarkerArray
@@ -258,7 +269,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: FlatColor
       Decay Time: 0
-      Enabled: false
+      Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -273,7 +284,7 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
+      Value: true
     - Class: rviz/Group
       Displays:
         - Class: rviz/Marker
@@ -331,7 +342,7 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 2.3499999046325684
+            Max Value: 2.25
             Min Value: 0.15000000596046448
             Value: true
           Axis: Z
@@ -987,7 +998,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/ThirdPersonFollower
-      Distance: 13.423848152160645
+      Distance: 12.48476791381836
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -995,8 +1006,8 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 4.972903251647949
-        Y: 0.8336567878723145
+        X: 3.781952142715454
+        Y: 3.819632053375244
         Z: 0.5043718218803406
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
