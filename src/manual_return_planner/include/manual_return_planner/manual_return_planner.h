@@ -60,6 +60,9 @@ struct ManualReturnConfig {
   double rdp_epsilon = 0.05;            // [m]
   double max_segment_length = 5.0;      // [m]
   double max_reasonable_speed = 2.25;   // [m/s], warning threshold
+  // RDP may not skip measured samples across a larger z span.  This keeps
+  // climbs/descents on the flown 3D trace instead of creating a new diagonal.
+  double vertical_preserve_threshold = 0.05; // [m]
 
   // Safe-RDP V1.1 reservation.  These values are deliberately not used by
   // V1.0: a point cloud may veto a shortcut later, but must never be treated
@@ -74,21 +77,13 @@ struct ManualReturnConfig {
   double extra_safety_margin = 0.05;    // [m]
   double collision_check_step = 0.1;    // [m]
 
-  // Takeoff-phase handling.  The 10 Hz recorder starts as soon as the node
-  // boots, so the very first history samples may still be the pre-takeoff
-  // initial pose (low/negative z) before the drone climbs to its hover height.
-  // The true Home is the hover point, not that initial transient, otherwise the
-  // return path ends with a spurious vertical dive.  If the opening samples
-  // stay within takeoff_xy_tolerance of the first position while rising by at
-  // least takeoff_min_rise, they are treated as the takeoff climb and the
-  // hover point (highest z in that segment) becomes Home.
-  double takeoff_xy_tolerance = 0.5;   // [m]
-  double takeoff_min_rise = 0.2;       // [m]
-
   // Execution/runtime reservation.  The ROS wrapper owns the actual timing.
   double return_cruise_speed = 0.5;    // [m/s]
   double max_return_acceleration = 1.5; // [m/s^2]
   double home_position_tolerance = 0.3; // [m]
+  // Stop this far above the recorded arm/Home point, then hand control to the
+  // landing state.  ENU uses positive z upward.
+  double landing_handoff_height = 0.25; // [m]
   double record_frequency = 10.0;       // [Hz]
   std::string world_frame = "world";
     SafeRdpConfig safe_rdp;
@@ -107,6 +102,8 @@ struct ReturnPlanResult {
   double return_path_length = 0.0;
   double compression_ratio = 0.0;
   double max_rdp_deviation = 0.0;
+  std::size_t vertical_protected_segments = 0;
+  std::size_t vertical_restored_points = 0;
   double planning_time_ms = 0.0;
     // Safe-RDP V1.1 outputs.
     std::vector<ReturnWaypoint> safe_waypoints;
@@ -119,7 +116,9 @@ struct ReturnPlanResult {
     int voxelized_cloud_size = 0;
     std::size_t original_rdp_point_num = 0;
     std::size_t safe_point_num = 0;
-    int shortcut_count = 0;
+    int shortcut_count = 0;  // map-accepted RDP shortcut segments
+    int shortcut_candidates = 0;
+    std::size_t map_restored_points = 0;
   std::string message;
 };
 
@@ -180,6 +179,11 @@ class ManualReturnPlanner {
   static std::vector<TrajectoryPoint> enforceMaxSegmentLength(
       const std::vector<TrajectoryPoint>& simplified,
       const std::vector<TrajectoryPoint>& history, double max_segment_length);
+  static std::vector<TrajectoryPoint> preserveVerticalHistory(
+      const std::vector<TrajectoryPoint>& simplified,
+      const std::vector<TrajectoryPoint>& history,
+      double vertical_preserve_threshold,
+      std::size_t* protected_segments, std::size_t* restored_points);
   static std::vector<ReturnWaypoint> makeWaypoints(
       const std::vector<TrajectoryPoint>& reversed);
 };
@@ -236,6 +240,8 @@ struct ReturnMetrics {
     int safe_path_points = 0;
     int original_rdp_points = 0;
     int shortcut_count = 0;
+    int shortcut_candidates = 0;
+    int map_restored_points = 0;
 };
 
 // Computes algorithm-agnostic quality metrics that do not depend on the

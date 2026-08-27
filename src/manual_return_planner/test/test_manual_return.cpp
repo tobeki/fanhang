@@ -100,6 +100,125 @@ TEST(ManualReturnPlanner, ReversesEndpointsAndBoundsSegments) {
               config.max_segment_length + 1e-9);
 }
 
+TEST(ManualReturnPlanner, UsesLowLandingHandoffAcrossTakeoffClimb) {
+  std::vector<TrajectoryPoint> input;
+  input.push_back(point(0.0, 0.0, 0.0));
+  input.push_back(point(0.0, 0.0, 0.5));
+  input.push_back(point(0.0, 0.0, 1.0));
+  input.push_back(point(2.0, 0.0, 1.0));
+  for (std::size_t i = 0; i < input.size(); ++i)
+    input[i].timestamp = 0.1 * static_cast<double>(i);
+
+  manual_return_planner::ManualReturnConfig config;
+  manual_return_planner::ManualReturnPlanner planner;
+  pcl::PointCloud<pcl::PointXYZ>::ConstPtr no_map;
+  const auto result = planner.planManualReturn(input, no_map, config);
+
+  ASSERT_TRUE(result.status == manual_return_planner::ManualReturnStatus::SUCCESS_RDP ||
+              result.status == manual_return_planner::ManualReturnStatus::SUCCESS_DENSE_BACKTRACK);
+  ASSERT_FALSE(result.return_waypoints.empty());
+  EXPECT_NEAR(result.return_waypoints.back().position.x(),
+              input.front().position.x(), 1e-9);
+  EXPECT_NEAR(result.return_waypoints.back().position.y(),
+              input.front().position.y(), 1e-9);
+  EXPECT_NEAR(result.return_waypoints.back().position.z(),
+              input.front().position.z() + config.landing_handoff_height,
+              1e-9);
+}
+
+TEST(ManualReturnPlanner, RestoresMeasuredSamplesAcrossHeightChange) {
+  std::vector<TrajectoryPoint> input;
+  // A mostly vertical 1 m climb with the small horizontal drift that a pilot
+  // or controller can produce in real flight.
+  for (int i = 0; i <= 10; ++i) {
+    TrajectoryPoint p = point(0.01 * i, 0.0, 0.1 * i);
+    p.timestamp = 0.1 * i;
+    input.push_back(p);
+  }
+  input.push_back(point(1.0, 0.0, 1.0));
+  input.back().timestamp = 1.1;
+  input.push_back(point(2.0, 0.0, 1.0));
+  input.back().timestamp = 1.2;
+
+  manual_return_planner::ManualReturnConfig config;
+  config.landing_handoff_height = 0.0;
+  config.vertical_preserve_threshold = 0.05;
+  config.safe_rdp.enabled = false;
+  manual_return_planner::ManualReturnPlanner planner;
+  pcl::PointCloud<pcl::PointXYZ>::ConstPtr no_map;
+  const auto result = planner.planManualReturn(input, no_map, config);
+
+  ASSERT_TRUE(result.status == manual_return_planner::ManualReturnStatus::SUCCESS_RDP ||
+              result.status == manual_return_planner::ManualReturnStatus::SUCCESS_DENSE_BACKTRACK);
+  EXPECT_GT(result.vertical_protected_segments, 0u);
+  EXPECT_GT(result.vertical_restored_points, 0u);
+  // Every measured sample on the height-changing interval must remain.  The
+  // return therefore retraces the slight drift instead of drawing one chord.
+  for (int i = 0; i <= 10; ++i) {
+    const Eigen::Vector3d expected(0.01 * i, 0.0, 0.1 * i);
+    bool found = false;
+    for (const auto& waypoint : result.return_waypoints) {
+      if ((waypoint.position - expected).norm() < 1e-9) {
+        found = true;
+        break;
+      }
+    }
+    EXPECT_TRUE(found) << "missing protected height sample " << i;
+  }
+}
+
+TEST(ManualReturnPlanner, StillCompressesLevelFlightWithSmallZNoise) {
+  std::vector<TrajectoryPoint> input;
+  for (int i = 0; i <= 100; ++i) {
+    TrajectoryPoint p = point(0.1 * i, 0.0,
+                              0.01 * std::sin(0.2 * i));
+    p.timestamp = 0.1 * i;
+    input.push_back(p);
+  }
+  manual_return_planner::ManualReturnConfig config;
+  config.landing_handoff_height = 0.0;
+  config.vertical_preserve_threshold = 0.05;
+  config.safe_rdp.enabled = false;
+  manual_return_planner::ManualReturnPlanner planner;
+  pcl::PointCloud<pcl::PointXYZ>::ConstPtr no_map;
+  const auto result = planner.planManualReturn(input, no_map, config);
+
+  ASSERT_TRUE(result.status == manual_return_planner::ManualReturnStatus::SUCCESS_RDP ||
+              result.status == manual_return_planner::ManualReturnStatus::SUCCESS_DENSE_BACKTRACK);
+  EXPECT_EQ(result.vertical_protected_segments, 0u);
+  EXPECT_EQ(result.vertical_restored_points, 0u);
+  EXPECT_LE(result.return_waypoints.size(), 5u);
+  EXPECT_LT(result.return_waypoints.size(), input.size() / 10);
+}
+
+TEST(ManualReturnPlanner, WholeMapRejectsShortcutAndKeepsReturnAvailable) {
+  std::vector<TrajectoryPoint> input = {
+      point(0.0, 0.0, 0.0),
+      point(1.0, 1.0, 0.0),
+      point(2.0, 0.0, 0.0),
+  };
+  for (std::size_t i = 0; i < input.size(); ++i)
+    input[i].timestamp = static_cast<double>(i);
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr map(
+      new pcl::PointCloud<pcl::PointXYZ>);
+  map->push_back(pcl::PointXYZ(1.0f, 0.0f, 0.0f));
+  manual_return_planner::ManualReturnConfig config;
+  config.rdp_epsilon = 2.0;  // force the direct chord as the RDP candidate
+  config.landing_handoff_height = 0.0;
+  config.safe_rdp.enabled = true;
+  manual_return_planner::ManualReturnPlanner planner;
+  const auto result = planner.planManualReturn(input, map, config);
+
+  ASSERT_TRUE(result.status == manual_return_planner::ManualReturnStatus::SUCCESS_RDP ||
+              result.status == manual_return_planner::ManualReturnStatus::SUCCESS_DENSE_BACKTRACK);
+  EXPECT_EQ(result.shortcut_candidates, 1);
+  EXPECT_EQ(result.unsafe_segments, 1);
+  EXPECT_EQ(result.map_restored_points, 1u);
+  ASSERT_EQ(result.return_waypoints.size(), input.size());
+  EXPECT_EQ(result.return_waypoints[1].position, input[1].position);
+}
+
 TEST(ManualReturnPreprocessor, RetainsNonFiniteAuxiliaryAsWarning) {
   std::vector<TrajectoryPoint> input{point(0.0, 0.0), point(1.0, 0.0)};
   input[0].timestamp = 0.0;

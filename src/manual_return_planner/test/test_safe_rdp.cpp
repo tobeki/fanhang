@@ -11,11 +11,20 @@ namespace {
 using manual_return_planner::ReturnWaypoint;
 using manual_return_planner::SafeRdpConfig;
 using manual_return_planner::SafeRdpPlanner;
+using manual_return_planner::TrajectoryPoint;
 
 ReturnWaypoint waypoint(double x, double y, double z = 0.0) {
   ReturnWaypoint w;
   w.position << x, y, z;
   return w;
+}
+
+TrajectoryPoint trajectoryPoint(double t, double x, double y,
+                                double z = 0.0) {
+  TrajectoryPoint p;
+  p.timestamp = t;
+  p.position << x, y, z;
+  return p;
 }
 
 pcl::PointCloud<pcl::PointXYZ>::Ptr makeCloud(
@@ -71,6 +80,68 @@ TEST(SafeRdpPlanner, ObstacleBeyondSafeRadiusPasses) {
   const auto r = planner.validate(straightPath(), cloud, defaultConfig());
   EXPECT_TRUE(r.safe);
   EXPECT_GT(r.min_clearance_m, defaultConfig().safeRadius());
+}
+
+TEST(SafeRdpPlanner, UnsafeShortcutRestoresOnlyItsHistoryInterval) {
+  const std::vector<TrajectoryPoint> history = {
+      trajectoryPoint(0.0, 0.0, 0.0),
+      trajectoryPoint(1.0, 1.0, 1.0),
+      trajectoryPoint(2.0, 2.0, 0.0),
+  };
+  const std::vector<TrajectoryPoint> candidate = {history.front(),
+                                                   history.back()};
+  auto cloud = makeCloud({{1.0, 0.0, 0.0}});
+  SafeRdpPlanner planner;
+  const auto r = planner.restoreUnsafeShortcuts(
+      candidate, history, cloud, defaultConfig());
+
+  ASSERT_TRUE(r.safe);
+  ASSERT_EQ(r.fallback_path.size(), history.size());
+  EXPECT_EQ(r.fallback_path[1].position, history[1].position);
+  EXPECT_EQ(r.shortcut_candidates, 1);
+  EXPECT_EQ(r.unsafe_segments, 1);
+  EXPECT_EQ(r.validated_segments, 0);
+  EXPECT_EQ(r.restored_history_points, 1u);
+}
+
+TEST(SafeRdpPlanner, ClearShortcutKeepsCompression) {
+  const std::vector<TrajectoryPoint> history = {
+      trajectoryPoint(0.0, 0.0, 0.0),
+      trajectoryPoint(1.0, 1.0, 0.02),
+      trajectoryPoint(2.0, 2.0, 0.0),
+  };
+  const std::vector<TrajectoryPoint> candidate = {history.front(),
+                                                   history.back()};
+  auto cloud = makeCloud({{10.0, 10.0, 10.0}});
+  SafeRdpPlanner planner;
+  const auto r = planner.restoreUnsafeShortcuts(
+      candidate, history, cloud, defaultConfig());
+
+  ASSERT_TRUE(r.safe);
+  EXPECT_EQ(r.fallback_path.size(), candidate.size());
+  EXPECT_EQ(r.shortcut_candidates, 1);
+  EXPECT_EQ(r.validated_segments, 1);
+  EXPECT_EQ(r.unsafe_segments, 0);
+  EXPECT_EQ(r.restored_history_points, 0u);
+}
+
+TEST(SafeRdpPlanner, EmptyMapLeavesCandidateUnverifiedButUsable) {
+  const std::vector<TrajectoryPoint> history = {
+      trajectoryPoint(0.0, 0.0, 0.0),
+      trajectoryPoint(1.0, 1.0, 0.0),
+      trajectoryPoint(2.0, 2.0, 0.0),
+  };
+  const std::vector<TrajectoryPoint> candidate = {history.front(),
+                                                   history.back()};
+  pcl::PointCloud<pcl::PointXYZ>::ConstPtr no_map;
+  SafeRdpPlanner planner;
+  const auto r = planner.restoreUnsafeShortcuts(
+      candidate, history, no_map, defaultConfig());
+
+  EXPECT_TRUE(r.safe);
+  EXPECT_FALSE(r.clearance_available);
+  EXPECT_EQ(r.fallback_path.size(), candidate.size());
+  EXPECT_EQ(r.collision_check_count, 0);
 }
 
 int main(int argc, char** argv) {

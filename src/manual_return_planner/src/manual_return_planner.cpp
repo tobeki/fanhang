@@ -72,8 +72,12 @@ bool TrajectoryPreprocessor::preprocess(
       !std::isfinite(config.rdp_epsilon) ||
       !std::isfinite(config.max_segment_length) ||
       !std::isfinite(config.max_reasonable_speed) ||
+      !std::isfinite(config.vertical_preserve_threshold) ||
+      !std::isfinite(config.landing_handoff_height) ||
       config.min_point_spacing < 0.0 || config.rdp_epsilon < 0.0 ||
-      config.max_segment_length <= 0.0 || config.max_reasonable_speed <= 0.0) {
+      config.max_segment_length <= 0.0 || config.max_reasonable_speed <= 0.0 ||
+      config.vertical_preserve_threshold < 0.0 ||
+      config.landing_handoff_height < 0.0) {
     *warning_message = "trajectory preprocessing parameters are invalid";
     return false;
   }
@@ -288,34 +292,6 @@ bool CsvTrajectoryReader::write(const std::string& path,
   return true;
 }
 
-namespace {
-
-// Find the takeoff hover point: the highest-z sample in the opening segment
-// that stays within `xy_tol` of the first position.  Returns its index, or 0
-// if there is no takeoff climb (the opening z never rises by `min_rise`), in
-// which case the original first point remains Home.
-std::size_t takeoffHomeIndex(const std::vector<TrajectoryPoint>& points,
-                             double xy_tol, double min_rise) {
-  if (points.size() < 2) return 0;
-  const Eigen::Vector3d start = points.front().position;
-  const double z_start = start.z();
-  std::size_t best = 0;
-  double best_z = z_start;
-  for (std::size_t i = 1; i < points.size(); ++i) {
-    const double xy = (points[i].position - start).head<2>().norm();
-    if (xy > xy_tol) break;  // left the launch point; takeoff segment ended
-    if (points[i].position.z() > best_z) {
-      best_z = points[i].position.z();
-      best = i;
-    }
-  }
-  // No real climb: keep the original first point as Home.
-  if (best_z - z_start < min_rise) return 0;
-  return best;
-}
-
-}  // namespace
-
 double ManualReturnPlanner::pathLength(
     const std::vector<TrajectoryPoint>& points) {
   double length = 0.0;
@@ -344,6 +320,68 @@ double ManualReturnPlanner::maxDeviation(
     source_start = source_end;
   }
   return maximum;
+}
+
+std::vector<TrajectoryPoint> ManualReturnPlanner::preserveVerticalHistory(
+    const std::vector<TrajectoryPoint>& simplified,
+    const std::vector<TrajectoryPoint>& history,
+    double vertical_preserve_threshold,
+    std::size_t* protected_segments, std::size_t* restored_points) {
+  if (protected_segments) *protected_segments = 0;
+  if (restored_points) *restored_points = 0;
+  if (simplified.size() < 2 || history.size() < 2) return simplified;
+
+  std::vector<TrajectoryPoint> result;
+  result.reserve(simplified.size());
+  result.push_back(simplified.front());
+  std::size_t history_index = 0;
+
+  for (std::size_t i = 1; i < simplified.size(); ++i) {
+    std::size_t target_index = history.size();
+    for (std::size_t h = history_index + 1; h < history.size(); ++h) {
+      if (history[h].timestamp == simplified[i].timestamp &&
+          history[h].position == simplified[i].position) {
+        target_index = h;
+        break;
+      }
+    }
+    if (target_index == history.size()) {
+      for (std::size_t h = history_index + 1; h < history.size(); ++h) {
+        if (history[h].position == simplified[i].position) {
+          target_index = h;
+          break;
+        }
+      }
+    }
+    // RDP returns copies of history points, so this is only a defensive path.
+    if (target_index == history.size()) {
+      result.push_back(simplified[i]);
+      continue;
+    }
+
+    double minimum_z = history[history_index].position.z();
+    double maximum_z = minimum_z;
+    for (std::size_t h = history_index + 1; h <= target_index; ++h) {
+      minimum_z = std::min(minimum_z, history[h].position.z());
+      maximum_z = std::max(maximum_z, history[h].position.z());
+    }
+
+    // A non-adjacent RDP chord is allowed only when the skipped history stays
+    // within one small z band.  Otherwise restore every measured point.  This
+    // also preserves a climb followed by a descent whose endpoints share z.
+    if (target_index > history_index + 1 &&
+        maximum_z - minimum_z > vertical_preserve_threshold + 1e-9) {
+      for (std::size_t h = history_index + 1; h <= target_index; ++h)
+        result.push_back(history[h]);
+      if (protected_segments) ++(*protected_segments);
+      if (restored_points)
+        *restored_points += target_index - history_index - 1;
+    } else {
+      result.push_back(simplified[i]);
+    }
+    history_index = target_index;
+  }
+  return result;
 }
 
 std::vector<TrajectoryPoint> ManualReturnPlanner::enforceMaxSegmentLength(
@@ -434,9 +472,15 @@ ReturnPlanResult ManualReturnPlanner::planManualReturn(
       std::chrono::steady_clock::now();
   if (!std::isfinite(config.rdp_epsilon) || config.rdp_epsilon < 0.0 ||
       !std::isfinite(config.max_segment_length) ||
-      config.max_segment_length <= 0.0) {
+      config.max_segment_length <= 0.0 ||
+      !std::isfinite(config.vertical_preserve_threshold) ||
+      config.vertical_preserve_threshold < 0.0 ||
+      !std::isfinite(config.landing_handoff_height) ||
+      config.landing_handoff_height < 0.0) {
     result.status = ManualReturnStatus::INVALID_INPUT;
-    result.message = "rdp_epsilon and max_segment_length must be finite and positive";
+    result.message =
+        "RDP, segment-length, vertical-protection, and landing-handoff "
+        "settings are invalid";
     result.planning_time_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start).count();
     return result;
@@ -457,28 +501,59 @@ ReturnPlanResult ManualReturnPlanner::planManualReturn(
   result.preprocessed_point_num = result.preprocessed_points.size();
   result.original_path_length = pathLength(result.original_points);
 
-  // Strip the pre-takeoff climb so Home becomes the hover point rather than
-  // the initial (low/negative-z) pose recorded before takeoff.  See
-  // ManualReturnConfig::takeoff_xy_tolerance / takeoff_min_rise.
-  {
-    const std::size_t home_index = takeoffHomeIndex(
-        result.preprocessed_points, config.takeoff_xy_tolerance,
-        config.takeoff_min_rise);
-    if (home_index > 0 && home_index < result.preprocessed_points.size()) {
-      result.preprocessed_points.erase(
-          result.preprocessed_points.begin(),
-          result.preprocessed_points.begin() +
-              static_cast<std::ptrdiff_t>(home_index));
-    }
-  }
+  // The first recorded point supplies the horizontal arm/Home position.  End
+  // the return at a low landing-handoff height above it instead of commanding
+  // either the ground point or px4ctrl's 1 m takeoff-hover Home.  The landing
+  // state owns the subsequent descent.
+  result.preprocessed_points.front().position.z() =
+      result.original_points.front().position.z() +
+      config.landing_handoff_height;
 
   result.reversed_points = result.preprocessed_points;
   std::reverse(result.reversed_points.begin(), result.reversed_points.end());
-  double rdp_deviation = 0.0;
   std::vector<TrajectoryPoint> simplified = RdpSimplifier::simplify(
-      result.reversed_points, config.rdp_epsilon, &rdp_deviation);
-  result.return_waypoints = makeWaypoints(enforceMaxSegmentLength(
-      simplified, result.reversed_points, config.max_segment_length));
+      result.reversed_points, config.rdp_epsilon, nullptr);
+  std::vector<TrajectoryPoint> vertically_protected = preserveVerticalHistory(
+      simplified, result.reversed_points, config.vertical_preserve_threshold,
+      &result.vertical_protected_segments, &result.vertical_restored_points);
+  std::vector<TrajectoryPoint> bounded = enforceMaxSegmentLength(
+      vertically_protected, result.reversed_points,
+      config.max_segment_length);
+
+  // Map-aware Safe-RDP checks only chords that actually skip measured history
+  // points.  If a chord violates the whole-map clearance, restore that local
+  // history interval instead of failing the plugin or inventing a detour.
+  result.safe_rdp_enabled = config.safe_rdp.enabled;
+  result.original_rdp_point_num = bounded.size();
+  std::vector<TrajectoryPoint> map_filtered = bounded;
+  if (config.safe_rdp.enabled) {
+    SafeRdpPlanner safe_planner;
+    const SafeRdpResult safe = safe_planner.restoreUnsafeShortcuts(
+        bounded, result.reversed_points, map_cloud, config.safe_rdp);
+    if (!safe.safe) {
+      result.status = ManualReturnStatus::NO_SAFE_PATH;
+      result.message = safe.message;
+      result.planning_time_ms = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - start).count();
+      return result;
+    }
+    map_filtered = safe.fallback_path;
+    result.clearance_available = safe.clearance_available;
+    result.min_clearance_m = safe.min_clearance_m;
+    result.collision_check_count = safe.collision_check_count;
+    // These legacy metric names now describe candidate shortcut decisions:
+    // unsafe=rejected/restored, validated=accepted.
+    result.unsafe_segments = safe.unsafe_segments;
+    result.validated_segments = safe.validated_segments;
+    result.voxelized_cloud_size = safe.voxelized_cloud_size;
+    result.shortcut_candidates = safe.shortcut_candidates;
+    result.shortcut_count = safe.validated_segments;
+    result.map_restored_points = safe.restored_history_points;
+  }
+
+  result.return_waypoints = makeWaypoints(map_filtered);
+  result.safe_waypoints = result.return_waypoints;
+  result.safe_point_num = result.return_waypoints.size();
   for (std::size_t i = 1; i < result.return_waypoints.size(); ++i) {
     const double segment_length =
         (result.return_waypoints[i].position -
@@ -497,52 +572,26 @@ ReturnPlanResult ManualReturnPlanner::planManualReturn(
   for (std::size_t i = 1; i < result.return_waypoints.size(); ++i)
     result.return_path_length +=
         (result.return_waypoints[i].position - result.return_waypoints[i - 1].position).norm();
-  result.max_rdp_deviation = rdp_deviation;
+  // Report the deviation after the z guard has restored protected samples.
+  // Max-segment enforcement only inserts more history points, so it cannot
+  // increase this value.
+  result.max_rdp_deviation =
+      maxDeviation(result.reversed_points, map_filtered);
   result.compression_ratio = result.raw_point_num == 0
                                  ? 0.0
                                  : static_cast<double>(result.final_point_num) /
                                        static_cast<double>(result.raw_point_num);
-      // --- Safe-RDP V1.1.0: validate the compressed path against the PCD. ---
-    result.safe_waypoints = result.return_waypoints;
-    result.safe_rdp_enabled = config.safe_rdp.enabled;
-    result.original_rdp_point_num = result.return_waypoints.size();
-    result.safe_point_num = result.return_waypoints.size();
-    result.shortcut_count = 0;  // V1.1.0 validates only; no shortcut optimization
-
-    if (config.safe_rdp.enabled && map_cloud && !map_cloud->empty()) {
-      SafeRdpPlanner safe_planner;
-      const SafeRdpResult safe =
-          safe_planner.validate(result.return_waypoints, map_cloud,
-                                config.safe_rdp);
-      result.clearance_available = safe.clearance_available;
-      result.min_clearance_m = safe.min_clearance_m;
-      result.collision_check_count = safe.collision_check_count;
-      result.unsafe_segments = safe.unsafe_segments;
-      result.validated_segments = safe.validated_segments;
-      result.voxelized_cloud_size = safe.voxelized_cloud_size;
-      result.safe_waypoints = safe.safe_path;
-      result.safe_point_num = result.safe_waypoints.size();
-      if (!safe.safe) {
-        result.status = ManualReturnStatus::NO_SAFE_PATH;
-        result.message = safe.message;
-        result.planning_time_ms =
-            std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - start).count();
-        return result;
-      }
-    } else {
-      result.clearance_available = false;
-      result.min_clearance_m = 0.0;
-      result.collision_check_count = 0;
-      result.unsafe_segments = 0;
-      result.validated_segments = 0;
-      result.voxelized_cloud_size = 0;
-    }
-
-result.status = result.final_point_num < result.preprocessed_point_num
+  result.status = result.final_point_num < result.preprocessed_point_num
                       ? ManualReturnStatus::SUCCESS_RDP
                       : ManualReturnStatus::SUCCESS_DENSE_BACKTRACK;
   result.message = warning.empty() ? "manual return path planned" : warning;
+  if (result.map_restored_points > 0) {
+    result.message += " (whole-map rejected " +
+                      std::to_string(result.unsafe_segments) +
+                      " shortcut(s); restored " +
+                      std::to_string(result.map_restored_points) +
+                      " history point(s))";
+  }
   result.planning_time_ms =
       std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - start).count();

@@ -53,6 +53,8 @@ int main(int argc, char** argv) {
             << " safe_path_points=" << r.safe_point_num
             << " original_rdp_points=" << r.original_rdp_point_num
             << " shortcut_count=" << r.shortcut_count
+            << " shortcut_candidates=" << r.shortcut_candidates
+            << " map_restored_points=" << r.map_restored_points
             << " voxelized_cloud_size=" << r.voxelized_cloud_size
             << " pointcloud_size=" << cloud->size()
             << "\n";

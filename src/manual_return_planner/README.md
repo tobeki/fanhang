@@ -3,8 +3,9 @@
 This package implements manual-mode return based on the vehicle's measured
 flight history. It validates ordered samples, removes only near-duplicate
 positions, reverses the history, applies true 3D Ramer-Douglas-Peucker (RDP),
-splits long segments with existing history points, and publishes the resulting
-path.
+restores measured samples wherever an RDP chord would cross a meaningful
+height change, splits long segments with existing history points, and
+publishes the resulting path.
 
 - **V1.0** delivered the algorithm and visualization: record, preprocess,
   Reverse, 3D RDP, max-segment-length constraint, yaw generation, RViz
@@ -220,13 +221,13 @@ Shipped defaults (`config/manual_return.yaml`):
 | `record_frequency` | 10.0 Hz | history sampling frequency |
 | `min_point_spacing` | 0.03 m | near-duplicate filter |
 | `rdp_epsilon` | 0.05 m | 3D RDP tolerance |
+| `vertical_preserve_threshold` | 0.05 m | maximum history z span that an RDP segment may skip |
 | `max_segment_length` | 5.0 m | max return segment |
 | `max_reasonable_speed` | 2.25 m/s | history jump warning |
 | `return_cruise_speed` | 0.5 m/s | return cruise speed |
 | `max_return_acceleration` | 1.5 m/s² | return accel (now used) |
 | `home_position_tolerance` | 0.30 m | Home arrival tolerance |
-| `takeoff_xy_tolerance` | 0.5 m | takeoff-climb xy range |
-| `takeoff_min_rise` | 0.2 m | min climb to detect takeoff |
+| `landing_handoff_height` | 0.25 m | final height above arm/Home before landing takes over |
 | `return_finish_speed_threshold` | 0.15 m/s | finish speed threshold |
 | `control_takeover_delay` | 1.5 s | gate-switch delay |
 | `command_frequency` | 100.0 Hz | executor publish rate |
@@ -447,17 +448,31 @@ roslaunch manual_return_planner manual_return_mid360.launch scenario:=turn90
 The `key_points` sphere count equals `simplified_points`, so the compression
 (e.g. 657 raw points to 13 waypoints) is visible at a glance.
 
-### Home / takeoff-climb handling
+### Home and landing handoff
 
-The recorder starts sampling the moment the node boots, so the first history
-samples may still be the pre-takeoff initial pose (low/negative z) before the
-drone climbs to its hover height.  If Home were taken from that first sample,
-the return path would end with a spurious vertical dive.  V1.0.3 therefore
-detects the takeoff climb — the opening samples that stay within
-`takeoff_xy_tolerance` of the launch position while rising by at least
-`takeoff_min_rise` — and sets Home to the hover point (highest z in that
-segment) instead.  This is controlled by `takeoff_xy_tolerance` and
-`takeoff_min_rise` and does not touch the RDP / Reverse pipeline.
+The first recorded point supplies the horizontal arm/Home position.  The
+planner deliberately ends at `landing_handoff_height` (0.25 m by default)
+above that point, rather than at the ground or at px4ctrl's approximately 1 m
+takeoff-hover Home.  The endpoint is included before Reverse, RDP, and
+segment-length enforcement, so it remains the final return waypoint.  The
+landing state owns the descent after this low-altitude handoff.
+
+### Z-axis original-route guard
+
+RDP is allowed to compress a history interval only when that interval's
+complete z range is at most `vertical_preserve_threshold` (0.05 m by default).
+If a candidate RDP segment skips samples spanning more than that height, the
+planner restores every preprocessed historical sample between its endpoints
+before max-segment enforcement and collision validation.  Consequently:
+
+- a vertical climb/descent is replayed through its measured samples;
+- a climb/descent with slight pilot drift follows that same 3D trace;
+- RDP cannot turn a stepped or curved height transition into a new diagonal;
+- level-flight centimetre-scale z noise remains eligible for compression.
+
+The 0.05 m value is a noise deadband, not permission to invent a vertical
+shortcut: any output segment spanning more height is either an adjacent
+measured segment or has all skipped measured samples restored.
 
 ## V1.0.3.1 benchmark data flow
 
@@ -503,34 +518,34 @@ python3 scripts/check_benchmark_runs.py  --base ~/fanhang/logs/manual_return_out
   short straight return. Longer / multi-turn / 3D scenarios still need to be
   run to calibrate Safe-RDP.
 - The RDP epsilon and all speeds are simulation starting points, not safety
-  guarantees. Safe-RDP (historical corridor, PCD KD-tree collision checks,
-  vehicle envelope, shortcut-ratio rejection) is the next stage and will use
-  the tracking-error data collected here.
+  guarantees. Map-aware Safe-RDP checks static accumulated PCD structure, not
+  live dynamic obstacles or a ray-traced known-free/unknown volume.
 
 
-## V1.1 Safe-RDP (basic validation)
+## V1.1 Safe-RDP (whole-map shortcut fallback)
 
-V1.1 adds a PCD-constrained safety validation step on top of the V1.0
-Reverse + 3D RDP pipeline.  It is **not** real-time avoidance, dynamic
-planning, or re-planning: it only *validates* the already-compressed return
-path against the map and rejects unsafe compression.
+V1.1 adds a PCD-constrained step on top of the Reverse + 3D RDP pipeline.  It
+is **not** real-time avoidance, dynamic planning, or A*: it validates only
+non-adjacent chords introduced by simplification.  An unsafe chord is locally
+replaced by the measured history samples it skipped, so other clear sections
+can remain compressed and return planning stays available.
 
 Components:
 
 - `include/manual_return_planner/safe_rdp.h` + `src/safe_rdp.cpp`:
-  `SafeRdpPlanner::validate(rdp_path, map_cloud, config)`.
+  `SafeRdpPlanner::restoreUnsafeShortcuts(candidate, history, map, config)`.
   It voxel-downsamples the PCD (VoxelGrid), builds a `pcl::KdTreeFLANN`, and
-  samples every segment at `collision_check_resolution`, measuring the nearest
-  obstacle distance.  A segment is unsafe if any sample is closer than
-  `R_safe`.
+  samples every shortcut at `collision_check_resolution`, measuring the
+  nearest obstacle distance.  A shortcut is restored if any sample is closer
+  than `R_safe`.  The lower-level `validate(...)` API remains available for
+  isolated clearance tests and benchmarks.
 - `SafeRdpConfig` (in `manual_return_planner.h`): master switch plus the safety
   envelope.  `R_safe = uav_radius + tracking_margin + extra_margin`
   (= 0.25 + 0.15 + 0.10 = **0.50 m** by default).
-- `planManualReturn(...)` now runs the validation when `safe_rdp.enabled` and a
-  non-empty PCD is supplied; on any unsafe segment it returns
-  `ManualReturnStatus::NO_SAFE_PATH` (the node enters `FAILED`).  When no PCD
-  is present, `clearance_available` stays `false` and the V1.0 behaviour is
-  preserved.
+- `planManualReturn(...)` runs the fallback when `safe_rdp.enabled`.  With no
+  PCD, `clearance_available` remains false and the Reverse + RDP result is
+  unchanged.  A mapped collision no longer changes the run to
+  `NO_SAFE_PATH`; only that filtering decision is cancelled.
 
 New configuration (`config/manual_return.yaml`):
 
@@ -550,22 +565,23 @@ New metrics in `return_metrics.csv` / `return_summary.txt`:
 safe_rdp_enabled, safe_path_points, original_rdp_points, shortcut_count
 ```
 
-plus the existing `collision_check_count`, `unsafe_segments`, `min_clearance_m`,
-`clearance_available`, `validated_segments`, `voxelized_cloud_size` are now
-populated from the Safe-RDP result (previously hard-coded to "not available").
+`unsafe_segments` now counts rejected/restored shortcut candidates;
+`validated_segments` and `shortcut_count` count accepted candidates.  The
+existing clearance, collision-query, safe-point, and voxelized-cloud metrics
+remain populated.
 
 New RViz topic:
 
 ```text
-/manual_return/safe_return_path   (green LINE_STRIP, == RDP path in V1.1.0)
+/manual_return/safe_return_path   (green LINE_STRIP, after map fallback)
 ```
 
-V1.1.0 deliberately does **not** implement shortcut optimization, detour,
-re-planning, or new-path search.  A colliding path simply fails
-(`NO_SAFE_PATH`).
+Safe-RDP deliberately does **not** implement detour, A*, or new-path search.
+It makes a binary decision for each existing RDP chord: keep the chord or
+restore the flown interval.
 
-Tests: `test/test_safe_rdp.cpp` adds 3 cases (clear path passes, obstacle on a
-segment fails, obstacle beyond `R_safe` passes).  Offline benchmark tool:
+Tests cover strict clearance, obstacle conversion, unsafe-shortcut restoration,
+clear-shortcut retention, and empty-map degradation.  Offline benchmark tool:
 `src/safe_rdp_benchmark.cpp` (`safe_rdp_benchmark <scenario> <csv> <pcd>`).
 
 

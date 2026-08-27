@@ -81,7 +81,7 @@ Visualization Manager:
       Marker Topic: /manual_return/return_path_line
       Name: ReturnPathLine
       Namespaces:
-        manual_return: true
+        {}
       Queue Size: 100
       Value: true
     - Class: rviz/Marker
@@ -89,7 +89,7 @@ Visualization Manager:
       Marker Topic: /manual_return/safe_return_path
       Name: SafeReturnPath
       Namespaces:
-        manual_return_safe: true
+        {}
       Queue Size: 100
       Value: true
     - Class: rviz/Marker
@@ -105,9 +105,7 @@ Visualization Manager:
       Marker Topic: /manual_return/trajectory_analysis_marker
       Name: TrajectoryAnalysis
       Namespaces:
-        trajectory_analysis: true
-        trajectory_analysis_dwell: true
-        trajectory_analysis_dwell_label: true
+        {}
       Queue Size: 100
       Value: true
     - Class: rviz/MarkerArray
@@ -115,7 +113,7 @@ Visualization Manager:
       Marker Topic: /manual_return/key_points
       Name: KeyPoints
       Namespaces:
-        manual_return_key_points: true
+        {}
       Queue Size: 100
       Value: true
     - Class: rviz/Marker
@@ -123,7 +121,7 @@ Visualization Manager:
       Marker Topic: /manual_return/home_marker
       Name: HomeMarker
       Namespaces:
-        manual_return: true
+        {}
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -227,7 +225,7 @@ Visualization Manager:
       Marker Topic: /manual_return/home
       Name: ReturnHome
       Namespaces:
-        manual_return: true
+        {}
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -342,8 +340,8 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 2.25
-            Min Value: 0.15000000596046448
+            Max Value: 0.15000000596046448
+            Min Value: -2.3499999046325684
             Value: true
           Axis: Z
           Channel Name: intensity
@@ -372,7 +370,7 @@ Visualization Manager:
           Marker Topic: /quad0_diff_planner_node/optimal_list
           Name: DiffTraj
           Namespaces:
-            "": true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/Marker
@@ -388,7 +386,7 @@ Visualization Manager:
           Marker Topic: /quad0_diff_planner_node/init_list
           Name: DiffInitTraj
           Namespaces:
-            "": true
+            {}
           Queue Size: 100
           Value: true
         - Class: rviz/Marker

@@ -6,11 +6,15 @@ min_point_spacing: 0.03
 rdp_epsilon: 0.05
 max_segment_length: 5.0
 max_reasonable_speed: 2.25
+# If an RDP candidate segment skips history whose z range exceeds this value,
+# restore every measured point in that interval.  This prevents new diagonal
+# climb/descent shortcuts while ignoring centimetre-level altitude noise.
+vertical_preserve_threshold: 0.05
 max_return_acceleration: 1.5
 return_cruise_speed: 0.5
 home_position_tolerance: 0.30
-takeoff_xy_tolerance: 0.5
-takeoff_min_rise: 0.2
+# Final ENU altitude above the recorded arm/Home point before landing takes over.
+landing_handoff_height: 0.25
 return_finish_speed_threshold: 0.15
 control_takeover_delay: 1.5
 command_frequency: 100.0

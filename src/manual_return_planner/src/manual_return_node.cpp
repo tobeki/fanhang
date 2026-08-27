@@ -192,6 +192,8 @@ class ManualReturnNode {
     private_nh_.param("max_segment_length", config_.max_segment_length, 5.0);
     private_nh_.param("max_reasonable_speed", config_.max_reasonable_speed,
                       2.25);
+    private_nh_.param("vertical_preserve_threshold",
+                      config_.vertical_preserve_threshold, 0.05);
     private_nh_.param("corridor_radius", config_.corridor_radius, 0.5);
     private_nh_.param("corridor_check_step", config_.corridor_check_step, 0.2);
     private_nh_.param("min_length_ratio", config_.min_length_ratio, 0.85);
@@ -245,9 +247,8 @@ class ManualReturnNode {
     config_.max_return_acceleration = max_return_accel_;
     private_nh_.param("home_position_tolerance", home_tolerance_, 0.3);
     config_.home_position_tolerance = home_tolerance_;
-    private_nh_.param("takeoff_xy_tolerance", config_.takeoff_xy_tolerance,
-                      0.5);
-    private_nh_.param("takeoff_min_rise", config_.takeoff_min_rise, 0.2);
+    private_nh_.param("landing_handoff_height",
+                      config_.landing_handoff_height, 0.25);
     private_nh_.param("return_finish_speed_threshold",
                       return_finish_speed_threshold_, 0.15);
     private_nh_.param("control_takeover_delay", takeover_delay_, 1.5);
@@ -640,6 +641,18 @@ class ManualReturnNode {
                     << 100.0 * last_result_.compression_ratio << " %\n"
                     << "max RDP deviation      : "
                     << last_result_.max_rdp_deviation << " m\n"
+                    << "z-protected segments   : "
+                    << last_result_.vertical_protected_segments << "\n"
+                    << "z-restored points      : "
+                    << last_result_.vertical_restored_points << "\n"
+                    << "map shortcut candidates: "
+                    << last_result_.shortcut_candidates << "\n"
+                    << "map shortcuts accepted : "
+                    << last_result_.shortcut_count << "\n"
+                    << "map shortcuts rejected : "
+                    << last_result_.unsafe_segments << "\n"
+                    << "map-restored points    : "
+                    << last_result_.map_restored_points << "\n"
                     << "planning time          : "
                     << last_result_.planning_time_ms << " ms\n"
                     << "status                 : "
@@ -1402,6 +1415,9 @@ class ManualReturnNode {
     metrics.original_rdp_points =
         static_cast<int>(last_result_.original_rdp_point_num);
     metrics.shortcut_count = last_result_.shortcut_count;
+    metrics.shortcut_candidates = last_result_.shortcut_candidates;
+    metrics.map_restored_points =
+        static_cast<int>(last_result_.map_restored_points);
 
     // Tracking (spatial decomposition).
     std::vector<double> cross3d, vertical, along_abs;
@@ -1450,7 +1466,7 @@ class ManualReturnNode {
              "final_home_error_m,return_duration_s,planning_time_ms,"
              "memory_usage_mb,pointcloud_size,voxelized_cloud_size,"
              "safe_rdp_enabled,safe_path_points,original_rdp_points,"
-             "shortcut_count\n";
+             "shortcut_count,shortcut_candidates,map_restored_points\n";
       out << run_id_ << ',' << metrics.scenario << ','
           << metrics.original_points << ','
           << metrics.original_length_m << ',' << metrics.simplified_points << ','
@@ -1475,7 +1491,9 @@ class ManualReturnNode {
           << (metrics.safe_rdp_enabled ? "true" : "false") << ','
           << metrics.safe_path_points << ','
           << metrics.original_rdp_points << ','
-          << metrics.shortcut_count << '\n';
+          << metrics.shortcut_count << ','
+          << metrics.shortcut_candidates << ','
+          << metrics.map_restored_points << '\n';
       out.close();
     } else {
       ROS_WARN_STREAM("[ManualReturn] cannot write " << csv_path);
@@ -1535,6 +1553,10 @@ class ManualReturnNode {
       summary << "  original_rdp_points: " << metrics.original_rdp_points
               << "\n";
       summary << "  shortcut_count: " << metrics.shortcut_count << "\n";
+      summary << "  shortcut_candidates: " << metrics.shortcut_candidates
+              << "\n";
+      summary << "  map_restored_points: " << metrics.map_restored_points
+              << "\n";
       summary.close();
     }
 
