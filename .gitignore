@@ -71,3 +71,8 @@ Makefile
 *.mesh
 *.stl
 *.obj
+
+# ============================================================
+# Runtime log files (PID controller logs, etc.)
+# ============================================================
+src/MARSIM-ubuntu20/cascadePID/data/
