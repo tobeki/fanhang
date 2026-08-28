@@ -215,6 +215,14 @@ class ManualReturnNode {
                       config_.safe_rdp.voxel_resolution, 0.05);
     private_nh_.param("safe_rdp/collision_check_resolution",
                       config_.safe_rdp.collision_check_resolution, 0.05);
+    private_nh_.param("safe_rdp/provenance_deviation_threshold",
+                      config_.safe_rdp.provenance_deviation_threshold, 0.06);
+    private_nh_.param("safe_rdp/trust_flown_history",
+                      config_.safe_rdp.trust_flown_history, true);
+    private_nh_.param("safe_rdp/safe_rdp_radius",
+                      config_.safe_rdp.safe_rdp_radius, 0.35);
+    private_nh_.param("safe_rdp/history_fallback_spacing",
+                      config_.safe_rdp.history_fallback_spacing, 1.0);
     private_nh_.param("trajectory_analysis/segment_angle_threshold_deg",
                       analysis_config_.segment_angle_threshold_deg, 30.0);
     private_nh_.param("trajectory_analysis/segment_speed_change_threshold",
@@ -249,6 +257,8 @@ class ManualReturnNode {
     config_.home_position_tolerance = home_tolerance_;
     private_nh_.param("landing_handoff_height",
                       config_.landing_handoff_height, 0.25);
+    private_nh_.param("fixed_return_yaw", config_.fixed_return_yaw, true);
+    private_nh_.param("home_trim_radius", config_.home_trim_radius, 0.30);
     private_nh_.param("return_finish_speed_threshold",
                       return_finish_speed_threshold_, 0.15);
     private_nh_.param("control_takeover_delay", takeover_delay_, 1.5);
@@ -645,6 +655,10 @@ class ManualReturnNode {
                     << last_result_.vertical_protected_segments << "\n"
                     << "z-restored points      : "
                     << last_result_.vertical_restored_points << "\n"
+                    << "trusted history segs   : "
+                    << last_result_.trusted_history_segments << "\n"
+                    << "map-checked segments   : "
+                    << last_result_.map_checked_segments << "\n"
                     << "map shortcut candidates: "
                     << last_result_.shortcut_candidates << "\n"
                     << "map shortcuts accepted : "
@@ -653,6 +667,16 @@ class ManualReturnNode {
                     << last_result_.unsafe_segments << "\n"
                     << "map-restored points    : "
                     << last_result_.map_restored_points << "\n"
+                    << "1m fallback segments   : "
+                    << last_result_.fallback_segments << "\n"
+                    << "1m fallback points     : "
+                    << last_result_.fallback_points << "\n"
+                    << "landing handoff point  : "
+                    << (last_result_.landing_handoff_applied ? "yes" : "no")
+                    << "\n"
+                    << "landing yaw transition: "
+                    << (last_result_.landing_yaw_transition_applied ? "yes" : "no")
+                    << "\n"
                     << "planning time          : "
                     << last_result_.planning_time_ms << " ms\n"
                     << "status                 : "
@@ -1409,6 +1433,17 @@ class ManualReturnNode {
     metrics.min_clearance_m = last_result_.min_clearance_m;
     metrics.unsafe_segments = last_result_.unsafe_segments;
     metrics.validated_segments = last_result_.validated_segments;
+    metrics.trusted_history_segments = last_result_.trusted_history_segments;
+    metrics.map_checked_segments = last_result_.map_checked_segments;
+    metrics.fallback_segments = last_result_.fallback_segments;
+    metrics.fallback_points = static_cast<int>(last_result_.fallback_points);
+    metrics.z_protected_segments =
+        static_cast<int>(last_result_.vertical_protected_segments);
+    metrics.z_protected_points =
+        static_cast<int>(last_result_.vertical_restored_points);
+    metrics.landing_handoff_applied = last_result_.landing_handoff_applied;
+    metrics.landing_yaw_transition_applied =
+        last_result_.landing_yaw_transition_applied;
     metrics.collision_check_count = last_result_.collision_check_count;
     metrics.voxelized_cloud_size = last_result_.voxelized_cloud_size;
     metrics.safe_path_points = static_cast<int>(last_result_.safe_point_num);
@@ -1466,7 +1501,11 @@ class ManualReturnNode {
              "final_home_error_m,return_duration_s,planning_time_ms,"
              "memory_usage_mb,pointcloud_size,voxelized_cloud_size,"
              "safe_rdp_enabled,safe_path_points,original_rdp_points,"
-             "shortcut_count,shortcut_candidates,map_restored_points\n";
+             "shortcut_count,shortcut_candidates,trusted_history_segments,"
+             "map_checked_segments,unsafe_segments,fallback_segments,"
+             "fallback_points,z_protected_segments,z_protected_points,"
+             "landing_handoff_applied,landing_yaw_transition_applied,"
+             "map_restored_points\n";
       out << run_id_ << ',' << metrics.scenario << ','
           << metrics.original_points << ','
           << metrics.original_length_m << ',' << metrics.simplified_points << ','
@@ -1493,6 +1532,15 @@ class ManualReturnNode {
           << metrics.original_rdp_points << ','
           << metrics.shortcut_count << ','
           << metrics.shortcut_candidates << ','
+          << metrics.trusted_history_segments << ','
+          << metrics.map_checked_segments << ','
+          << metrics.unsafe_segments << ','
+          << metrics.fallback_segments << ','
+          << metrics.fallback_points << ','
+          << metrics.z_protected_segments << ','
+          << metrics.z_protected_points << ','
+          << (metrics.landing_handoff_applied ? "true" : "false") << ','
+          << (metrics.landing_yaw_transition_applied ? "true" : "false") << ','
           << metrics.map_restored_points << '\n';
       out.close();
     } else {
@@ -1554,6 +1602,23 @@ class ManualReturnNode {
               << "\n";
       summary << "  shortcut_count: " << metrics.shortcut_count << "\n";
       summary << "  shortcut_candidates: " << metrics.shortcut_candidates
+              << "\n";
+      summary << "  trusted_history_segments: "
+              << metrics.trusted_history_segments << "\n";
+      summary << "  map_checked_segments: " << metrics.map_checked_segments
+              << "\n";
+      summary << "  fallback_segments: " << metrics.fallback_segments
+              << "\n";
+      summary << "  fallback_points: " << metrics.fallback_points << "\n";
+      summary << "  z_protected_segments: " << metrics.z_protected_segments
+              << "\n";
+      summary << "  z_protected_points: " << metrics.z_protected_points
+              << "\n";
+      summary << "  landing_handoff_applied: "
+              << (metrics.landing_handoff_applied ? "true" : "false")
+              << "\n";
+      summary << "  landing_yaw_transition_applied: "
+              << (metrics.landing_yaw_transition_applied ? "true" : "false")
               << "\n";
       summary << "  map_restored_points: " << metrics.map_restored_points
               << "\n";

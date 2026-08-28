@@ -39,7 +39,7 @@ pcl::PointCloud<pcl::PointXYZ>::Ptr makeCloud(
   return cloud;
 }
 
-// Default config: safe_radius = 0.25 + 0.15 + 0.10 = 0.50 m.
+// Default config uses a 0.35 m clearance for novel shortcut segments.
 SafeRdpConfig defaultConfig() { return SafeRdpConfig(); }
 
 // A straight 1 m path along x, 10 waypoints (11 points, 10 segments).
@@ -92,8 +92,10 @@ TEST(SafeRdpPlanner, UnsafeShortcutRestoresOnlyItsHistoryInterval) {
                                                    history.back()};
   auto cloud = makeCloud({{1.0, 0.0, 0.0}});
   SafeRdpPlanner planner;
+  auto config = defaultConfig();
+  config.trust_flown_history = false;
   const auto r = planner.restoreUnsafeShortcuts(
-      candidate, history, cloud, defaultConfig());
+      candidate, history, cloud, config);
 
   ASSERT_TRUE(r.safe);
   ASSERT_EQ(r.fallback_path.size(), history.size());
@@ -114,8 +116,10 @@ TEST(SafeRdpPlanner, ClearShortcutKeepsCompression) {
                                                    history.back()};
   auto cloud = makeCloud({{10.0, 10.0, 10.0}});
   SafeRdpPlanner planner;
+  auto config = defaultConfig();
+  config.trust_flown_history = false;
   const auto r = planner.restoreUnsafeShortcuts(
-      candidate, history, cloud, defaultConfig());
+      candidate, history, cloud, config);
 
   ASSERT_TRUE(r.safe);
   EXPECT_EQ(r.fallback_path.size(), candidate.size());

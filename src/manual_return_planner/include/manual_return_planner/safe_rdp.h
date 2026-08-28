@@ -14,13 +14,17 @@ namespace manual_return_planner {
 struct SafeRdpResult {
   bool safe = false;                     // true iff every segment is clear
   std::vector<ReturnWaypoint> safe_path; // == input path (V1.1.0 never edits)
-  // Map-aware fallback output.  Unsafe RDP shortcuts are replaced with the
-  // measured history samples they would have skipped.
+  // Map-aware fallback output. Unsafe RDP shortcuts are replaced with a
+  // bounded (~1 m) sample of the measured history, retaining turns/endpoints.
   std::vector<TrajectoryPoint> fallback_path;
   int collision_check_count = 0;         // number of sampled queries
   int unsafe_segments = 0;               // rejected shortcut candidates
   int validated_segments = 0;            // accepted shortcut candidates
   int shortcut_candidates = 0;
+  int trusted_history_segments = 0;      // skipped map checks
+  int map_checked_segments = 0;
+  int fallback_segments = 0;
+  std::size_t fallback_points = 0;
   std::size_t restored_history_points = 0;
   double min_clearance_m = 0.0;          // smallest obstacle distance seen
   bool clearance_available = false;      // false when no PCD was available

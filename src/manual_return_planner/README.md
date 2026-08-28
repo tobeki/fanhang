@@ -265,6 +265,47 @@ then trigger return:
 rosservice call /manual_return/trigger "{}"
 ```
 
+### Mission-mode simulation
+
+Mission mode uses the same simulator launch file but starts a separate
+`mission_return_node`; the manual recorder/executor must be disabled so that
+the two nodes never compete for the gate's return input:
+
+```bash
+roslaunch manual_return_planner manual_return_mid360.launch \
+  enable_manual_return_node:=false \
+  enable_mission_return_node:=true \
+  flight_type:=2 \
+  rviz_config:=$(rospack find manual_return_planner)/config/mission_return.rviz \
+  mission_takeoff_yaw:=0.0 \
+  point_num:=5 \
+  point0_x:=1.0 point0_y:=0.0 point0_z:=1.0 \
+  point1_x:=3.0 point1_y:=0.0 point1_z:=1.0 \
+  point2_x:=3.0 point2_y:=2.0 point2_z:=1.5 \
+  point3_x:=1.0 point3_y:=2.0 point3_z:=1.5 \
+  point4_x:=1.0 point4_y:=4.0 point4_z:=1.0
+```
+
+The node prepends the configured Home pose to this ordered waypoint list,
+subscribes to `/map_generator/global_cloud`, and exposes:
+
+```text
+/mission_return/trigger   (std_srvs/Trigger)
+/mission_return/reset     (std_srvs/Trigger)
+```
+
+After the preset mission has reached its final waypoint, trigger Mission RTL:
+
+```bash
+rosservice call /mission_return/trigger "{}"
+```
+
+The planner uses the 0.40 m whole-map Safe-RDP check. The return path is
+published on `/mission_return/return_path`, while the preset path is shown on
+`/mission_return/mission_path`. At Home the executor holds the first Mission
+waypoint yaw (`HOME_HOLD_TAKEOFF_YAW`); the simulator does not issue a physical
+land command.
+
 Verify the single publisher (normal and return phases alike):
 
 ```bash
@@ -456,6 +497,9 @@ above that point, rather than at the ground or at px4ctrl's approximately 1 m
 takeoff-hover Home.  The endpoint is included before Reverse, RDP, and
 segment-length enforcement, so it remains the final return waypoint.  The
 landing state owns the descent after this low-altitude handoff.
+Return waypoint yaw stays at the RTL-trigger yaw during the flight back. At
+the final handoff waypoint it switches once to the first recorded (takeoff)
+yaw, which is the heading expected by the landing/docking controller.
 
 ### Z-axis original-route guard
 

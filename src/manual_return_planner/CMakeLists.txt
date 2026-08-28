@@ -19,7 +19,7 @@ find_package(Eigen3 REQUIRED)
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES manual_return_core trajectory_analysis
+  LIBRARIES manual_return_core mission_return_core trajectory_analysis
   CATKIN_DEPENDS roscpp nav_msgs geometry_msgs sensor_msgs visualization_msgs std_msgs std_srvs pcl_ros pcl_conversions mars_quadrotor_msgs
   DEPENDS Eigen3
 )
@@ -28,6 +28,14 @@ include_directories(include ${catkin_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIRS})
 
 add_library(manual_return_core src/manual_return_planner.cpp src/safe_rdp.cpp)
 target_link_libraries(manual_return_core ${catkin_LIBRARIES})
+
+# Mission RTL remains separate from the manual trajectory planner: Mission
+# input is sparse ordered waypoints and every candidate is map-checked.
+add_library(mission_return_core src/mission_return_planner.cpp)
+target_link_libraries(mission_return_core manual_return_core ${catkin_LIBRARIES})
+
+add_executable(mission_return_node src/mission_return_node.cpp)
+target_link_libraries(mission_return_node mission_return_core ${catkin_LIBRARIES})
 
 # V2.0 historical trajectory understanding (detection only, no deletion).
 add_library(trajectory_analysis
@@ -70,6 +78,10 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET test_safe_rdp)
     target_link_libraries(test_safe_rdp manual_return_core gtest_main ${catkin_LIBRARIES})
   endif()
+  catkin_add_gtest(test_mission_return test/test_mission_return.cpp)
+  if(TARGET test_mission_return)
+    target_link_libraries(test_mission_return mission_return_core gtest_main ${catkin_LIBRARIES})
+  endif()
   catkin_add_gtest(test_trajectory_analysis test/test_trajectory_analysis.cpp)
   if(TARGET test_trajectory_analysis)
     target_link_libraries(test_trajectory_analysis manual_return_core trajectory_analysis gtest_main ${catkin_LIBRARIES})
@@ -80,7 +92,7 @@ if(CATKIN_ENABLE_TESTING)
   endif()
 endif()
 
-install(TARGETS manual_return_core trajectory_analysis manual_return_node command_gate_node
+install(TARGETS manual_return_core mission_return_core trajectory_analysis manual_return_node mission_return_node command_gate_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

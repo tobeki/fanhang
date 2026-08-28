@@ -28,6 +28,55 @@ bool sameHistoryPoint(const TrajectoryPoint& a, const TrajectoryPoint& b) {
   return a.timestamp == b.timestamp && a.position == b.position;
 }
 
+double historyDeviation(const std::vector<TrajectoryPoint>& history,
+                        std::size_t begin, std::size_t end,
+                        const Eigen::Vector3d& start,
+                        const Eigen::Vector3d& finish) {
+  if (begin >= history.size() || end >= history.size() || begin > end)
+    return std::numeric_limits<double>::infinity();
+  double maximum = 0.0;
+  for (std::size_t i = begin; i <= end; ++i) {
+    maximum = std::max(maximum,
+                       RdpSimplifier::pointToSegmentDistance(
+                           history[i].position, start, finish));
+  }
+  return maximum;
+}
+
+void appendHistoryFallback(std::vector<TrajectoryPoint>* output,
+                           const std::vector<TrajectoryPoint>& history,
+                           std::size_t begin, std::size_t end,
+                           double spacing, double turn_threshold) {
+  if (!output || history.empty() || begin >= history.size() ||
+      end >= history.size() || begin > end) return;
+  const double step = std::max(0.1, spacing);
+  double accumulated = 0.0;
+  std::size_t last_kept = begin;
+  for (std::size_t i = begin + 1; i <= end; ++i) {
+    accumulated += (history[i].position - history[i - 1].position).norm();
+    bool keep = accumulated >= step || i == end;
+    if (i > begin + 1 && i < end) {
+      const Eigen::Vector3d incoming =
+          history[i - 1].position - history[i - 2].position;
+      const Eigen::Vector3d outgoing =
+          history[i + 1].position - history[i].position;
+      const double ni = incoming.norm();
+      const double no = outgoing.norm();
+      if (ni > 1e-6 && no > 1e-6) {
+        double cosine = incoming.dot(outgoing) / (ni * no);
+        cosine = std::max(-1.0, std::min(1.0, cosine));
+        if (std::acos(cosine) >= turn_threshold) keep = true;
+      }
+    }
+    if (keep) {
+      output->push_back(history[i]);
+      last_kept = i;
+      accumulated = 0.0;
+    }
+  }
+  if (last_kept != end) output->push_back(history[end]);
+}
+
 std::size_t findHistoryIndex(const std::vector<TrajectoryPoint>& history,
                              std::size_t begin,
                              const TrajectoryPoint& target) {
@@ -198,10 +247,20 @@ SafeRdpResult SafeRdpPlanner::restoreUnsafeShortcuts(
     const std::size_t target_index = findHistoryIndex(
         reversed_history, history_index + 1, candidate_path[i]);
     if (target_index >= reversed_history.size()) {
-      // This should be impossible because RDP copies history points.  A dense
-      // history fallback is safer than accepting an untraceable chord.
-      result.fallback_path = reversed_history;
-      result.restored_history_points = reversed_history.size();
+      // This should be impossible because RDP copies history points.  Use the
+      // same bounded fallback policy rather than replaying the entire 10 Hz
+      // trace if a future planner introduces a synthetic point.
+      result.fallback_path.clear();
+      result.fallback_path.push_back(candidate_path.front());
+      appendHistoryFallback(&result.fallback_path, reversed_history, 0,
+                            reversed_history.size() - 1,
+                            config.history_fallback_spacing,
+                            20.0 * M_PI / 180.0);
+      result.fallback_segments = 1;
+      result.fallback_points = result.fallback_path.size() > 1
+                                   ? result.fallback_path.size() - 1
+                                   : 0;
+      result.restored_history_points = result.fallback_points;
       result.safe = true;
       result.message =
           "safe-rdp fallback: candidate mapping failed; dense history used";
@@ -215,6 +274,17 @@ SafeRdpResult SafeRdpPlanner::restoreUnsafeShortcuts(
     }
 
     ++result.shortcut_candidates;
+    const double deviation = historyDeviation(
+        reversed_history, history_index, target_index,
+        candidate_path[i - 1].position, candidate_path[i].position);
+    if (config.trust_flown_history &&
+        deviation <= config.provenance_deviation_threshold) {
+      ++result.trusted_history_segments;
+      result.fallback_path.push_back(candidate_path[i]);
+      history_index = target_index;
+      continue;
+    }
+    ++result.map_checked_segments;
     const bool clear = segmentIsClear(
         kdtree, candidate_path[i - 1].position, candidate_path[i].position,
         config, &result.collision_check_count, &minimum_clearance);
@@ -223,15 +293,21 @@ SafeRdpResult SafeRdpPlanner::restoreUnsafeShortcuts(
       result.fallback_path.push_back(candidate_path[i]);
     } else {
       ++result.unsafe_segments;
-      for (std::size_t h = history_index + 1; h <= target_index; ++h)
-        result.fallback_path.push_back(reversed_history[h]);
-      result.restored_history_points +=
-          target_index - history_index - 1;
+      ++result.fallback_segments;
+      const std::size_t before = result.fallback_path.size();
+      appendHistoryFallback(&result.fallback_path, reversed_history,
+                            history_index, target_index,
+                            config.history_fallback_spacing,
+                            20.0 * M_PI / 180.0);
+      const std::size_t added = result.fallback_path.size() - before;
+      const std::size_t restored = added > 0 ? added - 1 : 0;
+      result.restored_history_points += restored;
+      result.fallback_points += restored;
     }
     history_index = target_index;
   }
 
-  result.clearance_available = result.shortcut_candidates > 0;
+  result.clearance_available = result.map_checked_segments > 0;
   result.min_clearance_m = std::isfinite(minimum_clearance)
                                ? minimum_clearance
                                : 0.0;

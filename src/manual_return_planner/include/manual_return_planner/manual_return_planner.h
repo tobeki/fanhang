@@ -48,9 +48,19 @@ struct SafeRdpConfig {
   double extra_margin = 0.10;                // [m] additional safety margin
   double voxel_resolution = 0.05;            // [m] VoxelGrid leaf size
   double collision_check_resolution = 0.05;  // [m] sampling step on segments
+  // Chords this close to the measured history are trusted as provenance
+  // preserving and skip the map veto.
+  double provenance_deviation_threshold = 0.06;
+  bool trust_flown_history = true;
+  // Clearance used only for novel (larger-deviation) chords.
+  double safe_rdp_radius = 0.35;
+  // Local fallback spacing after an unsafe novel shortcut.
+  double history_fallback_spacing = 1.0;
 
   double safeRadius() const {
-    return uav_radius + tracking_margin + extra_margin;
+    return safe_rdp_radius > 0.0
+               ? safe_rdp_radius
+               : uav_radius + tracking_margin + extra_margin;
   }
 };
 
@@ -84,6 +94,8 @@ struct ManualReturnConfig {
   // Stop this far above the recorded arm/Home point, then hand control to the
   // landing state.  ENU uses positive z upward.
   double landing_handoff_height = 0.25; // [m]
+  bool fixed_return_yaw = true;
+  double home_trim_radius = 0.30;       // [m]
   double record_frequency = 10.0;       // [Hz]
   std::string world_frame = "world";
     SafeRdpConfig safe_rdp;
@@ -117,8 +129,16 @@ struct ReturnPlanResult {
     std::size_t original_rdp_point_num = 0;
     std::size_t safe_point_num = 0;
     int shortcut_count = 0;  // map-accepted RDP shortcut segments
-    int shortcut_candidates = 0;
-    std::size_t map_restored_points = 0;
+  int shortcut_candidates = 0;
+  int trusted_history_segments = 0;
+  int map_checked_segments = 0;
+  int fallback_segments = 0;
+  std::size_t fallback_points = 0;
+  std::size_t map_restored_points = 0;
+  std::size_t home_trimmed_points = 0;
+  bool home_approach_inserted = false;
+  bool landing_handoff_applied = false;
+  bool landing_yaw_transition_applied = false;
   std::string message;
 };
 
@@ -185,7 +205,8 @@ class ManualReturnPlanner {
       double vertical_preserve_threshold,
       std::size_t* protected_segments, std::size_t* restored_points);
   static std::vector<ReturnWaypoint> makeWaypoints(
-      const std::vector<TrajectoryPoint>& reversed);
+      const std::vector<TrajectoryPoint>& reversed, bool fixed_yaw,
+      double fixed_yaw_value);
 };
 
 // Unified benchmark metrics for a single return run.  These fields are kept
@@ -219,6 +240,14 @@ struct ReturnMetrics {
   bool clearance_available = false;
   int unsafe_segments = 0;
   int validated_segments = 0;
+  int trusted_history_segments = 0;
+  int map_checked_segments = 0;
+  int fallback_segments = 0;
+  int fallback_points = 0;
+  int z_protected_segments = 0;
+  int z_protected_points = 0;
+  bool landing_handoff_applied = false;
+  bool landing_yaw_transition_applied = false;
   int collision_check_count = 0;
 
   // Tracking (spatial, not time-synchronized).

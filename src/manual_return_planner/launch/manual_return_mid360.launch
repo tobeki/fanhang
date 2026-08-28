@@ -13,10 +13,17 @@
     <!-- Manual Return V1.0.1 control-switch options -->
     <arg name="enable_return_command_output" default="true"/>
     <arg name="require_control_takeover" default="false"/>
+    <arg name="enable_manual_return_node" default="true"/>
+    <arg name="enable_mission_return_node" default="false"/>
+    <arg name="mission_takeoff_yaw" default="0.0"/>
+    <arg name="home_x" default="0.0"/>
+    <arg name="home_y" default="0.0"/>
+    <arg name="home_z" default="1.0"/>
     <arg name="trajectory_csv" default=""/>
     <arg name="output_dir" default="$(env HOME)/fanhang/logs/manual_return_output"/>
     <arg name="pcd_path" default=""/>
     <arg name="scenario" default="unknown"/>
+    <arg name="rviz_config" default="$(find manual_return_planner)/config/manual_return_benchmark.rviz"/>
 
     <!-- Preset-waypoint options (flight_type=2).  Used for scenarios that need
          height changes: MANUAL_TARGET hard-codes z=1 in the legacy planner, so
@@ -79,10 +86,10 @@
         <arg name="drone_id" value="0"/>
         <arg name="uav_num_" value="$(arg drone_num)"/>
         <arg name="lidar_type" value="mid360"/>
-        <arg name="init_x_" value="0.0"/>
-        <arg name="init_y_" value="0.0"/>
-        <arg name="init_z_" value="1.0"/>
-        <arg name="init_yaw" value="0.0"/>
+        <arg name="init_x_" value="$(arg home_x)"/>
+        <arg name="init_y_" value="$(arg home_y)"/>
+        <arg name="init_z_" value="$(arg home_z)"/>
+        <arg name="init_yaw" value="$(arg mission_takeoff_yaw)"/>
         <arg name="map_name_" value="$(arg map_name)"/>
         <arg name="downsample_resolution_" value="$(arg downsample_resolution)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
@@ -128,18 +135,53 @@
     <!-- Scenario label for the unified benchmark metrics. -->
     <param name="/manual_return/scenario" value="$(arg scenario)"/>
 
-    <!-- Manual Return node (recorder + planner + executor) -->
-    <node pkg="manual_return_planner" type="manual_return_node"
-          name="manual_return_planner" output="screen">
-        <rosparam command="load" file="$(find manual_return_planner)/config/manual_return.yaml"/>
-        <param name="enable_return_command_output" value="$(arg enable_return_command_output)"/>
-        <param name="require_control_takeover" value="$(arg require_control_takeover)"/>
-        <param name="trajectory_csv" value="$(arg trajectory_csv)"/>
-        <param name="output_dir" value="$(arg output_dir)"/>
-        <param name="pcd_path" value="$(arg pcd_path)"/>
-    </node>
+    <!-- Manual Return node (recorder + planner + executor).  It is disabled
+         for Mission runs so both executors never publish the return stream. -->
+    <group if="$(arg enable_manual_return_node)">
+        <node pkg="manual_return_planner" type="manual_return_node"
+              name="manual_return_planner" output="screen">
+            <rosparam command="load" file="$(find manual_return_planner)/config/manual_return.yaml"/>
+            <param name="enable_return_command_output" value="$(arg enable_return_command_output)"/>
+            <param name="require_control_takeover" value="$(arg require_control_takeover)"/>
+            <param name="trajectory_csv" value="$(arg trajectory_csv)"/>
+            <param name="output_dir" value="$(arg output_dir)"/>
+            <param name="pcd_path" value="$(arg pcd_path)"/>
+        </node>
+    </group>
+
+    <!-- Mission Return node.  It consumes the ordered preset waypoints and
+         the global whole-map, then publishes through the same CommandGate
+         return input. -->
+    <group if="$(arg enable_mission_return_node)">
+        <node pkg="manual_return_planner" type="mission_return_node"
+              name="mission_return_node" output="screen">
+            <param name="world_frame" value="$(arg frame_id)"/>
+            <param name="map_topic" value="$(arg global_cloud_topic)"/>
+            <param name="odom_topic" value="/quad_0/$(arg odom_topic)"/>
+            <param name="waypoint_num" value="$(arg point_num)" type="int"/>
+            <param name="takeoff_yaw" value="$(arg mission_takeoff_yaw)" type="double"/>
+            <param name="home_x" value="$(arg home_x)" type="double"/>
+            <param name="home_y" value="$(arg home_y)" type="double"/>
+            <param name="home_z" value="$(arg home_z)" type="double"/>
+            <param name="waypoint0_x" value="$(arg point0_x)" type="double"/>
+            <param name="waypoint0_y" value="$(arg point0_y)" type="double"/>
+            <param name="waypoint0_z" value="$(arg point0_z)" type="double"/>
+            <param name="waypoint1_x" value="$(arg point1_x)" type="double"/>
+            <param name="waypoint1_y" value="$(arg point1_y)" type="double"/>
+            <param name="waypoint1_z" value="$(arg point1_z)" type="double"/>
+            <param name="waypoint2_x" value="$(arg point2_x)" type="double"/>
+            <param name="waypoint2_y" value="$(arg point2_y)" type="double"/>
+            <param name="waypoint2_z" value="$(arg point2_z)" type="double"/>
+            <param name="waypoint3_x" value="$(arg point3_x)" type="double"/>
+            <param name="waypoint3_y" value="$(arg point3_y)" type="double"/>
+            <param name="waypoint3_z" value="$(arg point3_z)" type="double"/>
+            <param name="waypoint4_x" value="$(arg point4_x)" type="double"/>
+            <param name="waypoint4_y" value="$(arg point4_y)" type="double"/>
+            <param name="waypoint4_z" value="$(arg point4_z)" type="double"/>
+        </node>
+    </group>
 
     <node name="rvizvisualisation" pkg="rviz" type="rviz" output="screen"
-          args="-d $(find manual_return_planner)/config/manual_return_benchmark.rviz"/>
+          args="-d $(arg rviz_config)"/>
 
 </launch>

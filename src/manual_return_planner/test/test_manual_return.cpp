@@ -103,9 +103,11 @@ TEST(ManualReturnPlanner, ReversesEndpointsAndBoundsSegments) {
 TEST(ManualReturnPlanner, UsesLowLandingHandoffAcrossTakeoffClimb) {
   std::vector<TrajectoryPoint> input;
   input.push_back(point(0.0, 0.0, 0.0));
+  input.back().yaw = 1.2;
   input.push_back(point(0.0, 0.0, 0.5));
   input.push_back(point(0.0, 0.0, 1.0));
   input.push_back(point(2.0, 0.0, 1.0));
+  input.back().yaw = 0.7;
   for (std::size_t i = 0; i < input.size(); ++i)
     input[i].timestamp = 0.1 * static_cast<double>(i);
 
@@ -124,6 +126,10 @@ TEST(ManualReturnPlanner, UsesLowLandingHandoffAcrossTakeoffClimb) {
   EXPECT_NEAR(result.return_waypoints.back().position.z(),
               input.front().position.z() + config.landing_handoff_height,
               1e-9);
+  EXPECT_TRUE(result.landing_yaw_transition_applied);
+  EXPECT_NEAR(result.return_waypoints.back().yaw, input.front().yaw, 1e-9);
+  for (std::size_t i = 0; i + 1 < result.return_waypoints.size(); ++i)
+    EXPECT_NEAR(result.return_waypoints[i].yaw, input.back().yaw, 1e-9);
 }
 
 TEST(ManualReturnPlanner, RestoresMeasuredSamplesAcrossHeightChange) {
@@ -144,6 +150,8 @@ TEST(ManualReturnPlanner, RestoresMeasuredSamplesAcrossHeightChange) {
   config.landing_handoff_height = 0.0;
   config.vertical_preserve_threshold = 0.05;
   config.safe_rdp.enabled = false;
+  // This test exercises the Z guard independently of Home startup trimming.
+  config.home_trim_radius = 100.0;
   manual_return_planner::ManualReturnPlanner planner;
   pcl::PointCloud<pcl::PointXYZ>::ConstPtr no_map;
   const auto result = planner.planManualReturn(input, no_map, config);
@@ -152,19 +160,12 @@ TEST(ManualReturnPlanner, RestoresMeasuredSamplesAcrossHeightChange) {
               result.status == manual_return_planner::ManualReturnStatus::SUCCESS_DENSE_BACKTRACK);
   EXPECT_GT(result.vertical_protected_segments, 0u);
   EXPECT_GT(result.vertical_restored_points, 0u);
-  // Every measured sample on the height-changing interval must remain.  The
-  // return therefore retraces the slight drift instead of drawing one chord.
-  for (int i = 0; i <= 10; ++i) {
-    const Eigen::Vector3d expected(0.01 * i, 0.0, 0.1 * i);
-    bool found = false;
-    for (const auto& waypoint : result.return_waypoints) {
-      if ((waypoint.position - expected).norm() < 1e-9) {
-        found = true;
-        break;
-      }
-    }
-    EXPECT_TRUE(found) << "missing protected height sample " << i;
-  }
+  // The protected interval retains structural boundaries, not every 10 Hz
+  // sample. The final Home boundary must remain present.
+  EXPECT_LT(result.return_waypoints.size(), input.size());
+  EXPECT_NEAR(result.return_waypoints.back().position.x(), 0.0, 1e-9);
+  EXPECT_NEAR(result.return_waypoints.back().position.z(), 0.0, 1e-9);
+  EXPECT_LT(result.vertical_restored_points, 10u);
 }
 
 TEST(ManualReturnPlanner, StillCompressesLevelFlightWithSmallZNoise) {
@@ -207,6 +208,7 @@ TEST(ManualReturnPlanner, WholeMapRejectsShortcutAndKeepsReturnAvailable) {
   config.rdp_epsilon = 2.0;  // force the direct chord as the RDP candidate
   config.landing_handoff_height = 0.0;
   config.safe_rdp.enabled = true;
+  config.safe_rdp.trust_flown_history = false;
   manual_return_planner::ManualReturnPlanner planner;
   const auto result = planner.planManualReturn(input, map, config);
 

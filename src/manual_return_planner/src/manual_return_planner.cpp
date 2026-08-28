@@ -41,6 +41,52 @@ std::vector<std::string> splitCsv(const std::string& line) {
   return fields;
 }
 
+double horizontalDistance(const TrajectoryPoint& a, const TrajectoryPoint& b) {
+  return (a.position.head<2>() - b.position.head<2>()).norm();
+}
+
+std::vector<TrajectoryPoint> buildReturnHistory(
+    const std::vector<TrajectoryPoint>& preprocessed,
+    const std::vector<TrajectoryPoint>& home, const ManualReturnConfig& config,
+    std::size_t* trimmed_points, bool* approach_inserted) {
+  std::vector<TrajectoryPoint> chronological = preprocessed;
+  if (trimmed_points) *trimmed_points = 0;
+  if (approach_inserted) *approach_inserted = false;
+  if (home.empty() || chronological.empty())
+    return std::vector<TrajectoryPoint>(chronological.rbegin(),
+                                       chronological.rend());
+
+  const TrajectoryPoint& handoff = home.front();
+  std::size_t departure = 0;
+  for (std::size_t i = 1; i < chronological.size(); ++i) {
+    if (horizontalDistance(chronological[i], handoff) >
+        config.home_trim_radius) {
+      departure = i;
+      break;
+    }
+  }
+  if (departure > 0) {
+    if (trimmed_points) *trimmed_points = departure;
+    chronological.erase(chronological.begin(), chronological.begin() + departure);
+  }
+
+  if (!chronological.empty()) {
+    TrajectoryPoint approach = handoff;
+    approach.position.z() = chronological.front().position.z();
+    std::vector<TrajectoryPoint> augmented;
+    augmented.reserve(chronological.size() + 2);
+    augmented.push_back(handoff);
+    if (horizontalDistance(chronological.front(), approach) > 1e-6) {
+      augmented.push_back(approach);
+      if (approach_inserted) *approach_inserted = true;
+    }
+    augmented.insert(augmented.end(), chronological.begin(), chronological.end());
+    chronological.swap(augmented);
+  }
+  return std::vector<TrajectoryPoint>(chronological.rbegin(),
+                                     chronological.rend());
+}
+
 }  // namespace
 
 bool TrajectoryPreprocessor::detectPositionJump(
@@ -74,10 +120,18 @@ bool TrajectoryPreprocessor::preprocess(
       !std::isfinite(config.max_reasonable_speed) ||
       !std::isfinite(config.vertical_preserve_threshold) ||
       !std::isfinite(config.landing_handoff_height) ||
+      !std::isfinite(config.home_trim_radius) ||
       config.min_point_spacing < 0.0 || config.rdp_epsilon < 0.0 ||
       config.max_segment_length <= 0.0 || config.max_reasonable_speed <= 0.0 ||
       config.vertical_preserve_threshold < 0.0 ||
-      config.landing_handoff_height < 0.0) {
+      config.landing_handoff_height < 0.0 ||
+      config.home_trim_radius < 0.0 ||
+      !std::isfinite(config.safe_rdp.provenance_deviation_threshold) ||
+      !std::isfinite(config.safe_rdp.safe_rdp_radius) ||
+      !std::isfinite(config.safe_rdp.history_fallback_spacing) ||
+      config.safe_rdp.provenance_deviation_threshold < 0.0 ||
+      config.safe_rdp.safe_rdp_radius <= 0.0 ||
+      config.safe_rdp.history_fallback_spacing <= 0.0) {
     *warning_message = "trajectory preprocessing parameters are invalid";
     return false;
   }
@@ -366,16 +420,65 @@ std::vector<TrajectoryPoint> ManualReturnPlanner::preserveVerticalHistory(
       maximum_z = std::max(maximum_z, history[h].position.z());
     }
 
-    // A non-adjacent RDP chord is allowed only when the skipped history stays
-    // within one small z band.  Otherwise restore every measured point.  This
-    // also preserves a climb followed by a descent whose endpoints share z.
+    // Keep the structural boundaries of a height-changing interval, together
+    // with altitude extrema and sharp turns.  Samples between those critical
+    // points remain eligible for RDP; the complete 10 Hz interval is not
+    // replayed.
     if (target_index > history_index + 1 &&
         maximum_z - minimum_z > vertical_preserve_threshold + 1e-9) {
-      for (std::size_t h = history_index + 1; h <= target_index; ++h)
-        result.push_back(history[h]);
+      std::vector<std::size_t> critical{history_index, target_index};
+      const double dz_epsilon =
+          std::max(0.01, vertical_preserve_threshold * 0.25);
+      std::size_t first_change = target_index + 1;
+      std::size_t last_change = history_index;
+      for (std::size_t h = history_index + 1; h <= target_index; ++h) {
+        if (std::fabs(history[h].position.z() -
+                      history[h - 1].position.z()) > dz_epsilon) {
+          first_change = std::min(first_change, h);
+          last_change = h;
+        }
+      }
+      if (first_change <= target_index) {
+        if (first_change > history_index) critical.push_back(first_change - 1);
+        critical.push_back(first_change);
+        critical.push_back(last_change);
+        if (last_change < target_index) critical.push_back(last_change + 1);
+      }
+      std::size_t minimum_index = history_index;
+      std::size_t maximum_index = history_index;
+      for (std::size_t h = history_index + 1; h <= target_index; ++h) {
+        if (history[h].position.z() < history[minimum_index].position.z())
+          minimum_index = h;
+        if (history[h].position.z() > history[maximum_index].position.z())
+          maximum_index = h;
+      }
+      critical.push_back(minimum_index);
+      critical.push_back(maximum_index);
+      for (std::size_t h = history_index + 1; h < target_index; ++h) {
+        const Eigen::Vector3d incoming =
+            history[h].position - history[h - 1].position;
+        const Eigen::Vector3d outgoing =
+            history[h + 1].position - history[h].position;
+        const double ni = incoming.norm();
+        const double no = outgoing.norm();
+        if (ni > 1e-6 && no > 1e-6) {
+          double cosine = incoming.dot(outgoing) / (ni * no);
+          cosine = std::max(-1.0, std::min(1.0, cosine));
+          if (std::acos(cosine) >= 20.0 * M_PI / 180.0)
+            critical.push_back(h);
+        }
+      }
+      std::sort(critical.begin(), critical.end());
+      critical.erase(std::unique(critical.begin(), critical.end()),
+                     critical.end());
+      for (const std::size_t h : critical) {
+        if (h > history_index && h < target_index)
+          result.push_back(history[h]);
+      }
       if (protected_segments) ++(*protected_segments);
       if (restored_points)
-        *restored_points += target_index - history_index - 1;
+        *restored_points += critical.size() > 2 ? critical.size() - 2 : 0;
+      result.push_back(simplified[i]);
     } else {
       result.push_back(simplified[i]);
     }
@@ -438,10 +541,17 @@ std::vector<TrajectoryPoint> ManualReturnPlanner::enforceMaxSegmentLength(
 }
 
 std::vector<ReturnWaypoint> ManualReturnPlanner::makeWaypoints(
-    const std::vector<TrajectoryPoint>& reversed) {
+    const std::vector<TrajectoryPoint>& reversed, bool fixed_yaw,
+    double fixed_yaw_value) {
   std::vector<ReturnWaypoint> waypoints;
   waypoints.reserve(reversed.size());
   double previous_yaw = reversed.empty() ? 0.0 : reversed.front().yaw;
+  if (fixed_yaw) {
+    const double yaw = std::isfinite(fixed_yaw_value) ? fixed_yaw_value : 0.0;
+    for (const auto& point : reversed)
+      waypoints.push_back({point.position, yaw});
+    return waypoints;
+  }
   for (std::size_t i = 0; i < reversed.size(); ++i) {
     ReturnWaypoint waypoint;
     waypoint.position = reversed[i].position;
@@ -501,16 +611,14 @@ ReturnPlanResult ManualReturnPlanner::planManualReturn(
   result.preprocessed_point_num = result.preprocessed_points.size();
   result.original_path_length = pathLength(result.original_points);
 
-  // The first recorded point supplies the horizontal arm/Home position.  End
-  // the return at a low landing-handoff height above it instead of commanding
-  // either the ground point or px4ctrl's 1 m takeoff-hover Home.  The landing
-  // state owns the subsequent descent.
-  result.preprocessed_points.front().position.z() =
-      result.original_points.front().position.z() +
-      config.landing_handoff_height;
-
-  result.reversed_points = result.preprocessed_points;
-  std::reverse(result.reversed_points.begin(), result.reversed_points.end());
+  // Trim takeoff/initial-hover samples around Home and append an explicit
+  // horizontal approach followed by a vertical landing handoff.
+  TrajectoryPoint handoff = result.original_points.front();
+  handoff.position.z() += config.landing_handoff_height;
+  result.reversed_points = buildReturnHistory(
+      result.preprocessed_points, {handoff}, config,
+      &result.home_trimmed_points, &result.home_approach_inserted);
+  result.landing_handoff_applied = true;
   std::vector<TrajectoryPoint> simplified = RdpSimplifier::simplify(
       result.reversed_points, config.rdp_epsilon, nullptr);
   std::vector<TrajectoryPoint> vertically_protected = preserveVerticalHistory(
@@ -549,9 +657,26 @@ ReturnPlanResult ManualReturnPlanner::planManualReturn(
     result.shortcut_candidates = safe.shortcut_candidates;
     result.shortcut_count = safe.validated_segments;
     result.map_restored_points = safe.restored_history_points;
+    result.trusted_history_segments = safe.trusted_history_segments;
+    result.map_checked_segments = safe.map_checked_segments;
+    result.fallback_segments = safe.fallback_segments;
+    result.fallback_points = safe.fallback_points;
   }
 
-  result.return_waypoints = makeWaypoints(map_filtered);
+  const double fixed_yaw = result.original_points.empty()
+                               ? 0.0
+                               : result.original_points.back().yaw;
+  result.return_waypoints = makeWaypoints(
+      map_filtered, config.fixed_return_yaw, fixed_yaw);
+  // The return path keeps the RTL-trigger yaw.  At the final Home handoff,
+  // switch once to the takeoff yaw so the landing/docking controller receives
+  // the aircraft in its known heading.
+  if (config.fixed_return_yaw && !result.return_waypoints.empty() &&
+      !result.original_points.empty() &&
+      std::isfinite(result.original_points.front().yaw)) {
+    result.return_waypoints.back().yaw = result.original_points.front().yaw;
+    result.landing_yaw_transition_applied = true;
+  }
   result.safe_waypoints = result.return_waypoints;
   result.safe_point_num = result.return_waypoints.size();
   for (std::size_t i = 1; i < result.return_waypoints.size(); ++i) {
